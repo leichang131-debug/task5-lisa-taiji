@@ -23,12 +23,18 @@ def save_current_figure(path: str | Path, dpi: int = 180) -> None:
     plt.savefig(path, dpi=dpi, bbox_inches="tight")
 
 
-def plot_timeseries(time: np.ndarray, data: np.ndarray, title: str) -> None:
+def plot_timeseries(
+    time: np.ndarray,
+    data: np.ndarray,
+    title: str,
+    xlabel: str = "Time",
+    ylabel: str = "Strain / normalized amplitude",
+) -> None:
     """Plot a one-dimensional time series."""
     plt.figure(figsize=(10, 4))
     plt.plot(time, data, lw=0.8)
-    plt.xlabel("Time")
-    plt.ylabel("Strain / normalized amplitude")
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
     plt.title(title)
     plt.grid(alpha=0.25)
 
