@@ -47,7 +47,7 @@ Extraction code: ucas
 After downloading, set the local path in the first notebook:
 
 ```python
-DATA_PATH = "path/to/LDC2_spritz_mbhb1_training_v1.h5"
+DATA_PATH = r"E:\BaiduNetdiskDownload\LDC2_spritz_mbhb1_training_v1.h5"
 ```
 
 Large local data and generated outputs are ignored by `.gitignore`.
@@ -68,8 +68,14 @@ Main goals:
 4. Select a TDI channel such as `X`, `A`, or `E` for analysis.
 5. Plot raw time-series and frequency-domain diagnostic figures.
 6. Perform Wilson-Daubechies-Meyer wavelet transform with `WDMWaveletTransforms`.
-7. Perform fractional Fourier transform with `torch-frft`.
+7. Perform fractional Fourier transform with the NumPy/SciPy helper in `src/frft_utils.py`.
 8. Save clear time-frequency visualization figures under `figures/task5_subtask1/`.
+
+FRFT reference evaluation:
+
+- `siddharth-maddali/frft`: useful multi-dimensional FRFT reference based on the Ozaktas chirp-convolution formulation.
+- `nanaln/python_frft`: selected as the main reference because it implements a one-dimensional NumPy/SciPy fast FRFT, matching the TDI time-series data.
+- `MStamatis/frft2d`: useful for two-dimensional data, but not used as the main method because this subtask transforms one-dimensional TDI time series.
 
 ## Subtask 2: Taiji MBHB Parameter Estimation
 

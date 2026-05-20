@@ -7,6 +7,4 @@ jupyter>=1.0
 notebook>=7.0
 ipykernel>=6.0
 numba>=0.60
-torch>=2.0
-torch-frft>=0.8.2
 git+https://github.com/XGI-MSU/WDMWaveletTransforms.git

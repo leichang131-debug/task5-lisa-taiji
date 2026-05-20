@@ -53,3 +53,13 @@ def plot_pcolormesh(
     plt.ylabel(ylabel)
     plt.title(title)
     plt.colorbar(mesh, label="log-scaled energy")
+
+
+def plot_frequency_diagnostic(freq: np.ndarray, psd: np.ndarray, title: str) -> None:
+    """Plot a log-log frequency diagnostic curve."""
+    plt.figure(figsize=(9, 4))
+    plt.loglog(freq, psd, lw=0.9)
+    plt.xlabel("Frequency [Hz]")
+    plt.ylabel("PSD")
+    plt.title(title)
+    plt.grid(alpha=0.25, which="both")

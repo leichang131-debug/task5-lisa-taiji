@@ -227,10 +227,4 @@ results/
 *.npy
 *.dat
 
-# Keep figure folders, but ignore generated images by default.
-# Remove these rules if final result figures should be committed.
-figures/**/*.png
-figures/**/*.pdf
-figures/**/*.jpg
-figures/**/*.jpeg
-!figures/**/.gitkeep
+# Figure outputs are intentionally tracked when they are final task results.
