@@ -216,3 +216,21 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project data and generated artifacts
+data/
+outputs/
+results/
+*.h5
+*.hdf5
+*.npz
+*.npy
+*.dat
+
+# Keep figure folders, but ignore generated images by default.
+# Remove these rules if final result figures should be committed.
+figures/**/*.png
+figures/**/*.pdf
+figures/**/*.jpg
+figures/**/*.jpeg
+!figures/**/.gitkeep

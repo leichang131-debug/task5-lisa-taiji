@@ -1,0 +1,19 @@
+name: task5-lisa-taiji
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.11
+  - numpy
+  - scipy
+  - matplotlib
+  - h5py
+  - pandas
+  - jupyter
+  - notebook
+  - ipykernel
+  - numba
+  - pip
+  - pip:
+      - torch
+      - torch-frft>=0.8.2
+      - git+https://github.com/XGI-MSU/WDMWaveletTransforms.git
