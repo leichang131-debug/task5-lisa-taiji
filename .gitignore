@@ -151,6 +151,7 @@ activemq-data/
 .env
 .envrc
 .venv
+.venv-tdc/
 env/
 venv/
 ENV/
@@ -221,6 +222,7 @@ __marimo__/
 data/
 outputs/
 results/
+external/
 *.h5
 *.hdf5
 *.npz
