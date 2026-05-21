@@ -131,6 +131,13 @@ Main goals:
 5. Re-run the inference pipeline and compare the posterior results with the baseline.
 6. Save corner plots, trace plots, and parameter comparison tables under `figures/task5_subtask2/`.
 
+Official Example 4 data files:
+
+- `0_2_MBHB_TDIXYZ.h5`: https://zenodo.org/records/15469724/files/0_2_MBHB_TDIXYZ.h5?download=1
+- `0_2_MBHB_parameters.h5`: https://zenodo.org/records/15532090/files/0_2_MBHB_parameters.h5?download=1
+
+The subtask 2 notebook first reproduces the official symmetric baseline window, `tc - 2.5 days` to `tc + 2.5 days`, and then rebuilds the full pipeline for the required asymmetric 5-day window, `tc - 4 days` to `tc + 1 day`.
+
 ## Environment
 
 For the lightweight subtask 1 environment, use:
