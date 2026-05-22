@@ -81,6 +81,7 @@ os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 REPO_ROOT = Path.cwd().resolve()
 if REPO_ROOT.name == "notebooks":
     REPO_ROOT = REPO_ROOT.parent
+os.environ.setdefault("MPLCONFIGDIR", str(REPO_ROOT / ".cache" / "matplotlib"))
 
 TRIANGLE_BBH_DIR = REPO_ROOT / "external" / "Triangle-BBH"
 TRIANGLE_SIM_DIR = REPO_ROOT / "external" / "Triangle-Simulator"
@@ -88,6 +89,7 @@ FIGURE_DIR = REPO_ROOT / "figures" / "task5_subtask2"
 RESULT_DIR = REPO_ROOT / "results" / "task5_subtask2"
 FIGURE_DIR.mkdir(parents=True, exist_ok=True)
 RESULT_DIR.mkdir(parents=True, exist_ok=True)
+(REPO_ROOT / ".cache" / "matplotlib").mkdir(parents=True, exist_ok=True)
 
 def git_commit(path: Path) -> str:
     if not path.exists():
@@ -121,15 +123,22 @@ Official data links from Example 4:
     code(
         r"""
 RUN_BASELINE_SEARCH = False
-RUN_BASELINE_SAMPLER = False
+RUN_BASELINE_SAMPLER = True
 RUN_FIVE_DAY_SEARCH = False
-RUN_FIVE_DAY_SAMPLER = False
+RUN_FIVE_DAY_SAMPLER = True
+USE_CACHED_SEARCH_RESULTS = True
 USE_SMOKE_TEST_SAMPLER = True
+USE_SMOKE_TEST_SEARCH = True
+FISHER_PRIOR_SIGMA = 10.0 if USE_SMOKE_TEST_SEARCH else 5.0
 
 FMIN = 0.5e-4
 FMAX = 1e-2
+OFFICIAL_SEARCH_MAXITER = 1000
+SMOKE_TEST_SEARCH_MAXITER = 100
+DE_WORKERS = 1 if os.name == "nt" else -1
 OFFICIAL_SAMPLER_SETTINGS = dict(sampler="nessai", nlive=1200, stopping=0.1)
-SMOKE_TEST_SAMPLER_SETTINGS = dict(sampler="nessai", nlive=100, stopping=0.5)
+SMOKE_TEST_SAMPLER_SETTINGS = dict(sampler="dynesty", nlive=80, dlogz=10.0, maxcall=1000, walks=5)
+SAMPLER_POOL = 1 if os.name == "nt" else os.cpu_count()
 
 CANDIDATE_TDC_ROOTS = [
     REPO_ROOT / "data" / "tdc",
@@ -151,6 +160,9 @@ ORBIT_DIR = TRIANGLE_SIM_DIR / "OrbitData" / "MicroSateOrbitEclipticTCB"
 print("DATA_DIR:", DATA_DIR, DATA_DIR.exists())
 print("PARAM_DIR:", PARAM_DIR, PARAM_DIR.exists())
 print("ORBIT_DIR:", ORBIT_DIR, ORBIT_DIR.exists())
+print("DE_WORKERS:", DE_WORKERS)
+print("SAMPLER_POOL:", SAMPLER_POOL)
+print("FISHER_PRIOR_SIGMA:", FISHER_PRIOR_SIGMA)
 """
     ),
     md("## 3. Imports Matching Official Example 4"),
@@ -158,12 +170,20 @@ print("ORBIT_DIR:", ORBIT_DIR, ORBIT_DIR.exists())
         r"""
 import bilby
 import h5py
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.interpolate import CubicSpline
 from scipy.optimize import differential_evolution
 from tqdm import tqdm
+
+if not hasattr(np, "int"):
+    np.int = int
+if not hasattr(np, "float"):
+    np.float = float
+
+matplotlib.rcParams["text.usetex"] = False
 
 from Triangle.Constants import *
 from Triangle.Orbit import *
@@ -188,6 +208,7 @@ plt.rcParams.update({"figure.dpi": 130, "savefig.dpi": 220, "axes.grid": True, "
 print("Imports OK")
 print("bilby:", getattr(bilby, "__version__", "unknown"))
 print("NESSAI available:", HAS_NESSAI)
+print("bilby samplers:", sorted(bilby.core.sampler.IMPLEMENTED_SAMPLERS.keys()))
 """
     ),
     md("## 4. Utility Functions"),
@@ -465,9 +486,11 @@ This migrates official Example 4 cells 18--30.
 def build_intrinsic_priors(response_kwargs_direct: dict) -> np.ndarray:
     return np.array([[5.0, 7.0], [0.01, 0.99], [-0.9, 0.9], [-0.9, 0.9], [response_kwargs_direct["tmin"], response_kwargs_direct["tmax"]], [0.0, TWOPI], [-1.0, 1.0]])
 
-def run_fstat_search(window: dict, maxiter: int = 1000, popsize_factor: int = 5) -> dict:
+def run_fstat_search(window: dict, maxiter: int | None = None, popsize_factor: int = 5) -> dict:
     if FDTDI is None:
         raise RuntimeError("Initialize FDTDI before running F-statistics search.")
+    if maxiter is None:
+        maxiter = SMOKE_TEST_SEARCH_MAXITER if USE_SMOKE_TEST_SEARCH else OFFICIAL_SEARCH_MAXITER
     response_kwargs_interp = build_response_kwargs(window, interpolation_method="cubic")
     response_kwargs_direct = response_kwargs_interp.copy()
     response_kwargs_direct["interpolation_method"] = None
@@ -483,7 +506,7 @@ def run_fstat_search(window: dict, maxiter: int = 1000, popsize_factor: int = 5)
 
     n_dim_int = 7
     bounds = np.array([np.zeros(n_dim_int), np.ones(n_dim_int)]).T
-    DE_result = differential_evolution(func=cost_function, bounds=bounds, x0=None, strategy="best1exp", maxiter=maxiter, popsize=popsize_factor*n_dim_int, tol=1e-6, atol=1e-8, mutation=(0.4, 0.95), recombination=0.7, disp=True, polish=False, workers=-1)
+    DE_result = differential_evolution(func=cost_function, bounds=bounds, x0=None, strategy="best1exp", maxiter=maxiter, popsize=popsize_factor*n_dim_int, tol=1e-6, atol=1e-8, mutation=(0.4, 0.95), recombination=0.7, disp=True, polish=False, workers=DE_WORKERS)
     searched_int_params = Fstat.IntParamArr2ParamDict(DE_result.x * (intrinsic_param_priors[:, 1] - intrinsic_param_priors[:, 0]) + intrinsic_param_priors[:, 0])
     searched_a = Fstat.calculate_Fstat(intrinsic_parameters=searched_int_params, return_a=True)
     searched_parameters = dict(searched_int_params, **Fstat.a_to_extrinsic(searched_a))
@@ -509,6 +532,32 @@ def plot_reconstruction(window: dict, search: dict, reflected: bool, filename: s
         plt.legend(loc="upper left")
     plt.suptitle(f"{window['label']} reconstruction ({title})")
     save_current_figure(filename)
+
+class CachedFisherErrors:
+    def __init__(self, param_errors: dict[str, float]):
+        self.param_errors = param_errors
+
+def load_search_from_cache(window: dict) -> tuple[dict, CachedFisherErrors] | tuple[None, None]:
+    param_path = RESULT_DIR / f"{window['label']}_searched_parameters.json"
+    reflected_path = RESULT_DIR / f"{window['label']}_searched_parameters_reflected.json"
+    fisher_path = RESULT_DIR / f"{window['label']}_fisher_errors.csv"
+    if not (param_path.exists() and reflected_path.exists() and fisher_path.exists()):
+        print(f"No cached search package found for {window['label']}.")
+        return None, None
+    if FDTDI is None:
+        raise RuntimeError("Initialize FDTDI before loading cached search waveforms.")
+    searched_parameters = json.loads(param_path.read_text(encoding="utf-8"))
+    searched_parameters_reflected = json.loads(reflected_path.read_text(encoding="utf-8"))
+    response_kwargs_interp = build_response_kwargs(window, interpolation_method="cubic")
+    response_kwargs_direct = response_kwargs_interp.copy()
+    response_kwargs_direct["interpolation_method"] = None
+    searched_wf = FDTDI.Response(searched_parameters, window["data_frequency"], **response_kwargs_interp)
+    searched_wf_reflected = FDTDI.Response(parameters=searched_parameters_reflected, freqs=window["data_frequency"], **response_kwargs_interp)
+    fisher_errors = pd.read_csv(fisher_path).set_index("parameter")["fim_error"].to_dict()
+    intrinsic_param_priors = build_intrinsic_priors(response_kwargs_direct)
+    search = dict(Fstat=None, DE_result=None, searched_parameters=searched_parameters, searched_parameters_reflected=searched_parameters_reflected, searched_wf=searched_wf, searched_wf_reflected=searched_wf_reflected, response_kwargs_interp=response_kwargs_interp, response_kwargs_direct=response_kwargs_direct, intrinsic_param_priors=intrinsic_param_priors)
+    print(f"Loaded cached search package for {window['label']} from {RESULT_DIR}.")
+    return search, CachedFisherErrors(fisher_errors)
 """
     ),
     code(
@@ -518,6 +567,8 @@ if RUN_BASELINE_SEARCH:
     baseline_search = run_fstat_search(baseline_window)
     plot_reconstruction(baseline_window, baseline_search, reflected=False, filename="03_baseline_reconstruction_direct.png")
     plot_reconstruction(baseline_window, baseline_search, reflected=True, filename="04_baseline_reconstruction_reflected.png")
+elif USE_CACHED_SEARCH_RESULTS:
+    baseline_search, baseline_FIM = load_search_from_cache(baseline_window)
 else:
     print("RUN_BASELINE_SEARCH=False. Official baseline search code is present but not executed.")
 """
@@ -557,10 +608,11 @@ def compare_search_to_injection(window: dict, search: dict, FIM) -> pd.DataFrame
     df.to_csv(RESULT_DIR / f"{window['label']}_search_vs_injection.csv", index=False)
     return df
 
-baseline_FIM = None
+baseline_FIM = globals().get("baseline_FIM")
 baseline_search_comparison = None
 if baseline_search is not None:
-    baseline_FIM = run_fisher_analysis(baseline_window, baseline_search)
+    if baseline_FIM is None:
+        baseline_FIM = run_fisher_analysis(baseline_window, baseline_search)
     baseline_search_comparison = compare_search_to_injection(baseline_window, baseline_search, baseline_FIM)
     display(baseline_search_comparison)
 else:
@@ -595,16 +647,17 @@ def build_likelihood(window: dict, search: dict) -> Likelihood:
 def build_priors(search: dict, FIM) -> bilby.core.prior.PriorDict:
     sp, pe = search["searched_parameters"], FIM.param_errors
     priors = bilby.core.prior.PriorDict()
-    priors["chirp_mass"] = bilby.prior.Uniform(sp["chirp_mass"]-5*pe["chirp_mass"], sp["chirp_mass"]+5*pe["chirp_mass"], name="chirp_mass", latex_label="$\\mathcal{M}_c$")
-    priors["mass_ratio"] = bilby.prior.Uniform(max(0.1, sp["mass_ratio"]-5*pe["mass_ratio"]), min(0.99, sp["mass_ratio"]+5*pe["mass_ratio"]), name="mass_ratio", latex_label="$q$")
-    priors["spin_1z"] = bilby.prior.Uniform(max(-0.9, sp["spin_1z"]-5*pe["spin_1z"]), min(0.9, sp["spin_1z"]+5*pe["spin_1z"]), name="spin_1z", latex_label="$\\chi_{z1}$")
-    priors["spin_2z"] = bilby.prior.Uniform(max(-0.9, sp["spin_2z"]-5*pe["spin_2z"]), min(0.9, sp["spin_2z"]+5*pe["spin_2z"]), name="spin_2z", latex_label="$\\chi_{z2}$")
-    priors["reference_time"] = bilby.prior.Uniform(sp["reference_time"]-5*pe["reference_time"], sp["reference_time"]+5*pe["reference_time"], name="reference_time", latex_label="$t_\\mathrm{ref}$")
+    nsig = FISHER_PRIOR_SIGMA
+    priors["chirp_mass"] = bilby.prior.Uniform(sp["chirp_mass"]-nsig*pe["chirp_mass"], sp["chirp_mass"]+nsig*pe["chirp_mass"], name="chirp_mass", latex_label="$\\mathcal{M}_c$")
+    priors["mass_ratio"] = bilby.prior.Uniform(max(0.1, sp["mass_ratio"]-nsig*pe["mass_ratio"]), min(0.99, sp["mass_ratio"]+nsig*pe["mass_ratio"]), name="mass_ratio", latex_label="$q$")
+    priors["spin_1z"] = bilby.prior.Uniform(max(-0.9, sp["spin_1z"]-nsig*pe["spin_1z"]), min(0.9, sp["spin_1z"]+nsig*pe["spin_1z"]), name="spin_1z", latex_label="$\\chi_{z1}$")
+    priors["spin_2z"] = bilby.prior.Uniform(max(-0.9, sp["spin_2z"]-nsig*pe["spin_2z"]), min(0.9, sp["spin_2z"]+nsig*pe["spin_2z"]), name="spin_2z", latex_label="$\\chi_{z2}$")
+    priors["reference_time"] = bilby.prior.Uniform(sp["reference_time"]-nsig*pe["reference_time"], sp["reference_time"]+nsig*pe["reference_time"], name="reference_time", latex_label="$t_\\mathrm{ref}$")
     priors["reference_phase"] = bilby.prior.Uniform(0.0, TWOPI, name="reference_phase", latex_label="$\\varphi_\\mathrm{ref}$", boundary="periodic")
-    priors["luminosity_distance"] = bilby.prior.Uniform(max(6e3, sp["luminosity_distance"]-5*pe["luminosity_distance"]), min(1e5, sp["luminosity_distance"]+5*pe["luminosity_distance"]), name="luminosity_distance", latex_label="$d_L$")
-    priors["inclination"] = bilby.prior.Sine(0.0, PI, name="inclination", latex_label="$\\iota$")
+    priors["luminosity_distance"] = bilby.prior.Uniform(max(6e3, sp["luminosity_distance"]-nsig*pe["luminosity_distance"]), min(1e5, sp["luminosity_distance"]+nsig*pe["luminosity_distance"]), name="luminosity_distance", latex_label="$d_L$")
+    priors["inclination"] = bilby.prior.Sine(minimum=0.0, maximum=PI, name="inclination", latex_label="$\\iota$")
     priors["longitude"] = bilby.prior.Uniform(0.0, TWOPI, name="longitude", latex_label="$\\lambda$", boundary="periodic")
-    priors["latitude"] = bilby.prior.Cosine(-PI/2.0, PI/2.0, name="latitude", latex_label="$\\beta$")
+    priors["latitude"] = bilby.prior.Cosine(minimum=-PI/2.0, maximum=PI/2.0, name="latitude", latex_label="$\\beta$")
     priors["psi"] = bilby.prior.Uniform(0.0, PI, name="psi", latex_label="$\\psi$", boundary="periodic")
     return priors
 
@@ -619,11 +672,15 @@ def build_injected_parameters_fref() -> dict:
 PARAMETERS_TO_COMPARE = ["chirp_mass", "mass_ratio", "spin_1z", "spin_2z", "reference_time", "reference_phase", "luminosity_distance", "inclination", "longitude", "latitude", "psi"]
 
 def run_nested_sampler(window: dict, search: dict, FIM, label: str, smoke_test: bool = True):
-    if not HAS_NESSAI:
-        raise RuntimeError("NESSAI is not installed/importable. Install nessai before running the official sampler.")
+    if not smoke_test and "nessai" not in bilby.core.sampler.IMPLEMENTED_SAMPLERS:
+        raise RuntimeError("This local bilby version does not support NESSAI. Use a Linux/conda environment with a newer bilby for the official sampler.")
     Like = build_likelihood(window, search)
-    result = bilby.run_sampler(likelihood=BilbyLikelihoodWrapper(Like), priors=build_priors(search, FIM), npool=os.cpu_count(), injection_parameters=build_injected_parameters_fref(), outdir=str(RESULT_DIR / f"{label}_samples"), label=label, plot=True, resume=False, **(SMOKE_TEST_SAMPLER_SETTINGS if smoke_test else OFFICIAL_SAMPLER_SETTINGS))
-    result.plot_corner(save=True)
+    settings = SMOKE_TEST_SAMPLER_SETTINGS if smoke_test else OFFICIAL_SAMPLER_SETTINGS
+    result = bilby.run_sampler(likelihood=BilbyLikelihoodWrapper(Like), priors=build_priors(search, FIM), npool=SAMPLER_POOL, injection_parameters=build_injected_parameters_fref(), outdir=str(RESULT_DIR / f"{label}_samples"), label=label, plot=False, resume=True, **settings)
+    try:
+        result.plot_corner(save=True)
+    except Exception as exc:
+        print(f"Corner plot skipped for {label}: {exc}")
     summary = posterior_summary(result.posterior, PARAMETERS_TO_COMPARE)
     summary.to_csv(RESULT_DIR / f"{label}_posterior_summary.csv", index=False)
     return result, summary
@@ -662,6 +719,11 @@ if RUN_FIVE_DAY_SEARCH:
     five_day_FIM = run_fisher_analysis(five_day_window, five_day_search)
     five_day_search_comparison = compare_search_to_injection(five_day_window, five_day_search, five_day_FIM)
     display(five_day_search_comparison)
+elif USE_CACHED_SEARCH_RESULTS:
+    five_day_search, five_day_FIM = load_search_from_cache(five_day_window)
+    if five_day_search is not None:
+        five_day_search_comparison = compare_search_to_injection(five_day_window, five_day_search, five_day_FIM)
+        display(five_day_search_comparison)
 else:
     print("RUN_FIVE_DAY_SEARCH=False. Modified-window search code is present but not executed.")
 

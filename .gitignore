@@ -230,3 +230,11 @@ external/
 *.dat
 
 # Figure outputs are intentionally tracked when they are final task results.
+
+# Small final result summaries are tracked for task reproducibility.
+!results/
+results/*
+!results/task5_subtask2/
+results/task5_subtask2/*
+!results/task5_subtask2/*.csv
+!results/task5_subtask2/*.json

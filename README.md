@@ -138,6 +138,35 @@ Official Example 4 data files:
 
 The subtask 2 notebook first reproduces the official symmetric baseline window, `tc - 2.5 days` to `tc + 2.5 days`, and then rebuilds the full pipeline for the required asymmetric 5-day window, `tc - 4 days` to `tc + 1 day`.
 
+Current subtask 2 outputs:
+
+- [Baseline time series](figures/task5_subtask2/01_baseline_timeseries.png)
+- [Baseline frequency-domain data and PSD](figures/task5_subtask2/02_baseline_frequency_psd.png)
+- [Baseline direct reconstruction](figures/task5_subtask2/03_baseline_reconstruction_direct.png)
+- [Baseline reflected reconstruction](figures/task5_subtask2/04_baseline_reconstruction_reflected.png)
+- [Task 5-day time series](figures/task5_subtask2/05_five_day_timeseries.png)
+- [Task 5-day frequency-domain data and PSD](figures/task5_subtask2/06_five_day_frequency_psd.png)
+- [Task 5-day direct reconstruction](figures/task5_subtask2/07_five_day_reconstruction_direct.png)
+- [Task 5-day reflected reconstruction](figures/task5_subtask2/08_five_day_reconstruction_reflected.png)
+- [Baseline Taiji-frame sky check](figures/task5_subtask2/09_baseline_taiji_frame_sky.png)
+- [Task 5-day Taiji-frame sky check](figures/task5_subtask2/10_five_day_taiji_frame_sky.png)
+
+Current quantitative summaries:
+
+- [Baseline search vs injection](results/task5_subtask2/baseline_example4_search_vs_injection.csv)
+- [Task 5-day search vs injection](results/task5_subtask2/task_five_day_search_vs_injection.csv)
+- [Baseline posterior summary](results/task5_subtask2/baseline_example4_posterior_summary.csv)
+- [Task 5-day posterior summary](results/task5_subtask2/task_five_day_posterior_summary.csv)
+- [Baseline vs 5-day posterior comparison](results/task5_subtask2/baseline_vs_five_day_parameter_summary.csv)
+
+Subtask 2 interpretation:
+
+The real TDC II files were loaded from `0_2_MBHB_TDIXYZ.h5` and `0_2_MBHB_parameters.h5`. Both the official baseline window and the required asymmetric 5-day window contain 43,201 samples at `dt = 10 s`, use A/E channels after the XYZ-to-AET conversion, and keep the same frequency band, `5e-5 Hz <= f <= 1e-2 Hz`.
+
+The 100-iteration validation F-statistics search recovers the intrinsic parameters at a useful level for notebook verification: baseline chirp-mass error is about `7.31e3 Msun`, mass-ratio error is `2.80e-4`, and spin errors are `7.98e-3` and `2.21e-2`; for the required 5-day window, chirp-mass error is about `1.15e4 Msun`, mass-ratio error is `3.74e-3`, and spin errors are `6.27e-3` and `3.42e-2`. Sky angles show the expected degeneracy structure, so both direct and reflected reconstructions are saved and compared.
+
+The Windows-local posterior run uses `bilby==1.0.0` with `dynesty==1.0.1` as a smoke sampler because this bilby version does not expose the official NESSAI sampler on Windows. The resulting 90% credible-interval comparison is therefore a pipeline-validation posterior, not the final official NESSAI production posterior. In this run, the required 5-day window gives narrower 90% intervals than the baseline for chirp mass, mass ratio, luminosity distance, reference time, and both aligned spins, while inclination and reference phase broaden. The full numerical table is in `results/task5_subtask2/baseline_vs_five_day_parameter_summary.csv`.
+
 ## Environment
 
 For the lightweight subtask 1 environment, use:
@@ -163,17 +192,11 @@ Triangle-BBH and Triangle-Simulator may require a separate Linux or WSL2 environ
 1. Run `notebooks/01_ldc_time_frequency_visualization.ipynb` for subtask 1.
 2. Clone and run the original Triangle-BBH Example 4 for baseline reproduction.
 3. Run or adapt `notebooks/02_taiji_mbhb_parameter_estimation.ipynb` for the 5-day window experiment.
-4. Update this README with final subtask 2 figures and conclusions.
+4. For a full production posterior, rerun the same notebook in a Linux or WSL2 conda environment with the official NESSAI-compatible Triangle-BBH stack and set `USE_SMOKE_TEST_SAMPLER = False`.
 
 ## Remaining Work
 
-Subtask 2 still needs to be completed:
-
-- Baseline Example 4 result figures.
-- Modified 5-day window result figures.
-- Posterior corner plots.
-- Parameter comparison table.
-- Short analysis of how the 5-day window changes the inference result.
+Subtask 2 is implemented and verified locally on the real TDC data. The remaining production upgrade is to run the official full NESSAI sampler in a Linux or WSL2 environment; the current Windows result is intentionally marked as a dynesty smoke posterior for pipeline validation.
 
 ## Notes
 
