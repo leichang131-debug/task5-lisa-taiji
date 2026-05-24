@@ -30,9 +30,17 @@ cells = [
 
 This notebook implements UCAS 2026 Task 5 subtask 2 by migrating the official
 Triangle-BBH Example 4 workflow into this repository and then adding the required
-asymmetric 5-day window experiment.
+asymmetric 5-day window experiment. The main execution route keeps Example 4's
+TDC data handling, FFT, PSD, covariance, and window comparison, but replaces the
+slow CPU nested-sampling stage with the official GPU route: Example 5's BBHx
+GPU F-statistics search followed by Example 2's GPU heterodyned Eryn sampler.
 
 Baseline source: `external/Triangle-BBH/Examples/4_TDC_Verification_MBHB_Search_and_Estimation(CPU).ipynb`.
+GPU references:
+
+- `external/Triangle-BBH/Examples/5_TDC_Verification_MBHB_Search_and_Estimation(GPU).ipynb`
+- `external/Triangle-BBH/Examples/1_MBHB_Parameter_Estimation_AE_Full(GPU).ipynb`
+- `external/Triangle-BBH/Examples/2_MBHB_Parameter_Estimation_AE_Heterodyne(GPU).ipynb`
 
 Implemented requirements:
 
@@ -42,7 +50,9 @@ Implemented requirements:
 4. Rebuild all data-dependent objects for the modified window and rerun the same inference chain.
 5. Save figures and summaries under `figures/task5_subtask2/` and `results/task5_subtask2/`.
 
-Heavy search and sampling cells are controlled by runtime switches so the notebook can be opened safely.
+Heavy search and sampling cells are controlled by runtime switches. The default
+main route is the official GPU route; the CPU/Bilby/NESSAI route is retained as
+a reference fallback.
 """
     ),
     md(
@@ -53,9 +63,10 @@ Heavy search and sampling cells are controlled by runtime switches so the notebo
 - [ ] Load TDC II TDI XYZ data and injected parameters.
 - [ ] Convert XYZ to A/E/T and keep A/E channels with the official sign convention.
 - [ ] Build official baseline window: `tc - 2.5 days` to `tc + 2.5 days`.
-- [ ] Reproduce Example 4 FFT, PSD, frequency cut, covariance, model setup, F-statistics search, Fisher analysis, likelihood, and sampler.
+- [ ] Reproduce Example 4 FFT, PSD, frequency cut, covariance, and model setup.
+- [ ] Run official GPU BBHx F-statistics search, Fisher analysis, and heterodyned Eryn sampler for the baseline window.
 - [ ] Build task-required window: `tc - 4 days` to `tc + 1 day`.
-- [ ] Rebuild time-domain data, FFT, PSD, covariance, waveform response, likelihood, and sampler for the modified window.
+- [ ] Rebuild time-domain data, FFT, PSD, covariance, GPU waveform response, likelihood, and sampler for the modified window.
 - [ ] Compare posterior medians and 90% credible intervals.
 - [ ] Update README with final figures and quantitative conclusions.
 """
@@ -85,6 +96,10 @@ os.environ.setdefault("MPLCONFIGDIR", str(REPO_ROOT / ".cache" / "matplotlib"))
 
 TRIANGLE_BBH_DIR = REPO_ROOT / "external" / "Triangle-BBH"
 TRIANGLE_SIM_DIR = REPO_ROOT / "external" / "Triangle-Simulator"
+if not TRIANGLE_BBH_DIR.exists():
+    TRIANGLE_BBH_DIR = Path("/mnt/e/TDCEnv/Repos/Triangle-BBH")
+if not TRIANGLE_SIM_DIR.exists():
+    TRIANGLE_SIM_DIR = Path("/mnt/e/TDCEnv/Repos/Triangle-Simulator")
 FIGURE_DIR = REPO_ROOT / "figures" / "task5_subtask2"
 RESULT_DIR = REPO_ROOT / "results" / "task5_subtask2"
 FIGURE_DIR.mkdir(parents=True, exist_ok=True)
@@ -122,26 +137,39 @@ Official data links from Example 4:
     ),
     code(
         r"""
-RUN_BASELINE_SEARCH = False
-RUN_BASELINE_SAMPLER = True
-RUN_FIVE_DAY_SEARCH = False
-RUN_FIVE_DAY_SAMPLER = True
+RUN_CPU_EXAMPLE4_FSTAT = False
+RUN_CPU_NESSAI = False
 USE_CACHED_SEARCH_RESULTS = True
-USE_SMOKE_TEST_SAMPLER = True
-USE_SMOKE_TEST_SEARCH = True
+USE_SMOKE_TEST_SAMPLER = False
+USE_SMOKE_TEST_SEARCH = False
 FISHER_PRIOR_SIGMA = 10.0 if USE_SMOKE_TEST_SEARCH else 5.0
+
+USE_GPU_BBHX = True
+RUN_GPU_PREFLIGHT = True
+RUN_GPU_FSTAT_SEARCH = True
+RUN_GPU_FISHER = True
+RUN_GPU_ERYN_SAMPLER = True
 
 FMIN = 0.5e-4
 FMAX = 1e-2
 OFFICIAL_SEARCH_MAXITER = 1000
 SMOKE_TEST_SEARCH_MAXITER = 100
-DE_WORKERS = 1 if os.name == "nt" else -1
+DE_WORKERS = 1
 OFFICIAL_SAMPLER_SETTINGS = dict(sampler="nessai", nlive=1200, stopping=0.1)
 SMOKE_TEST_SAMPLER_SETTINGS = dict(sampler="dynesty", nlive=80, dlogz=10.0, maxcall=1000, walks=5)
 SAMPLER_POOL = 1 if os.name == "nt" else os.cpu_count()
 
+GPU_SEARCH_MAXITER = OFFICIAL_SEARCH_MAXITER
+GPU_ERYN_NWALKERS = 400
+GPU_ERYN_NTEMPS = 10
+GPU_ERYN_THIN_BY = 100
+GPU_ERYN_TOTAL_STEPS = 100000
+GPU_ERYN_POST_BURNIN = 200
+GPU_ERYN_POST_THIN = 10
+
 CANDIDATE_TDC_ROOTS = [
     REPO_ROOT / "data" / "tdc",
+    Path("/mnt/e/TDCEnv/Repos/task5-lisa-taiji/data/tdc"),
     Path(r"E:\BaiduNetdiskDownload"),
     Path(r"E:\BaiduNetdiskDownload\TDCData"),
 ]
@@ -178,6 +206,14 @@ from scipy.interpolate import CubicSpline
 from scipy.optimize import differential_evolution
 from tqdm import tqdm
 
+try:
+    import cupy as xp
+    HAS_CUPY = True
+except Exception as exc:
+    xp = np
+    HAS_CUPY = False
+    print("CuPy unavailable, GPU route will be skipped:", repr(exc))
+
 if not hasattr(np, "int"):
     np.int = int
 if not hasattr(np, "float"):
@@ -208,6 +244,9 @@ plt.rcParams.update({"figure.dpi": 130, "savefig.dpi": 220, "axes.grid": True, "
 print("Imports OK")
 print("bilby:", getattr(bilby, "__version__", "unknown"))
 print("NESSAI available:", HAS_NESSAI)
+print("CuPy available:", HAS_CUPY)
+if HAS_CUPY:
+    print("CuPy devices:", xp.cuda.runtime.getDeviceCount())
 print("bilby samplers:", sorted(bilby.core.sampler.IMPLEMENTED_SAMPLERS.keys()))
 """
     ),
@@ -563,14 +602,14 @@ def load_search_from_cache(window: dict) -> tuple[dict, CachedFisherErrors] | tu
     code(
         r"""
 baseline_search = None
-if RUN_BASELINE_SEARCH:
+if RUN_CPU_EXAMPLE4_FSTAT:
     baseline_search = run_fstat_search(baseline_window)
     plot_reconstruction(baseline_window, baseline_search, reflected=False, filename="03_baseline_reconstruction_direct.png")
     plot_reconstruction(baseline_window, baseline_search, reflected=True, filename="04_baseline_reconstruction_reflected.png")
 elif USE_CACHED_SEARCH_RESULTS:
     baseline_search, baseline_FIM = load_search_from_cache(baseline_window)
 else:
-    print("RUN_BASELINE_SEARCH=False. Official baseline search code is present but not executed.")
+    print("RUN_CPU_EXAMPLE4_FSTAT=False. CPU Example 4 F-statistics code is present but not executed.")
 """
     ),
     md(
@@ -603,7 +642,8 @@ def compare_search_to_injection(window: dict, search: dict, FIM) -> pd.DataFrame
     for key, truth in injected_parameters_fref.items():
         if truth is None or key not in search["searched_parameters"]:
             continue
-        rows.append(dict(parameter=key, injected=truth, searched=search["searched_parameters"][key], searched_abs_error=abs(truth-search["searched_parameters"][key]), reflected=search["searched_parameters_reflected"].get(key), reflected_abs_error=abs(truth-search["searched_parameters_reflected"][key]) if key in search["searched_parameters_reflected"] else np.nan, fim_error=FIM.param_errors.get(key, np.nan)))
+        reflected = search.get("searched_parameters_reflected", {})
+        rows.append(dict(parameter=key, injected=truth, searched=search["searched_parameters"][key], searched_abs_error=abs(truth-search["searched_parameters"][key]), reflected=reflected.get(key), reflected_abs_error=abs(truth-reflected[key]) if key in reflected else np.nan, fim_error=FIM.param_errors.get(key, np.nan)))
     df = pd.DataFrame(rows)
     df.to_csv(RESULT_DIR / f"{window['label']}_search_vs_injection.csv", index=False)
     return df
@@ -621,9 +661,11 @@ else:
     ),
     md(
         """
-## 12. Heterodyned Likelihood, Priors, and Nested Sampling
+## 12. CPU Bilby/NESSAI Reference Path
 
-This migrates official Example 4 cells 37--47. The default sampler is NESSAI.
+This migrates official Example 4 cells 37--47 and is retained as a reference
+fallback. It is not the default main route because the local CPU NESSAI run is
+too slow for this task; the main route below uses official GPU BBHx + Eryn.
 """
     ),
     code(
@@ -687,10 +729,10 @@ def run_nested_sampler(window: dict, search: dict, FIM, label: str, smoke_test: 
 
 baseline_result = None
 baseline_summary = None
-if RUN_BASELINE_SAMPLER:
+if RUN_CPU_NESSAI:
     baseline_result, baseline_summary = run_nested_sampler(baseline_window, baseline_search, baseline_FIM, label="baseline_example4", smoke_test=USE_SMOKE_TEST_SAMPLER)
 else:
-    print("RUN_BASELINE_SAMPLER=False. Sampler code is present but not executed.")
+    print("RUN_CPU_NESSAI=False. CPU Bilby/NESSAI sampler code is present but not executed.")
 """
     ),
     md("## 13. Build Task-Required 5-Day Window"),
@@ -712,7 +754,7 @@ else:
 five_day_search = None
 five_day_FIM = None
 five_day_search_comparison = None
-if RUN_FIVE_DAY_SEARCH:
+if RUN_CPU_EXAMPLE4_FSTAT:
     five_day_search = run_fstat_search(five_day_window)
     plot_reconstruction(five_day_window, five_day_search, reflected=False, filename="07_five_day_reconstruction_direct.png")
     plot_reconstruction(five_day_window, five_day_search, reflected=True, filename="08_five_day_reconstruction_reflected.png")
@@ -725,14 +767,14 @@ elif USE_CACHED_SEARCH_RESULTS:
         five_day_search_comparison = compare_search_to_injection(five_day_window, five_day_search, five_day_FIM)
         display(five_day_search_comparison)
 else:
-    print("RUN_FIVE_DAY_SEARCH=False. Modified-window search code is present but not executed.")
+    print("RUN_CPU_EXAMPLE4_FSTAT=False. Modified-window CPU search code is present but not executed.")
 
 five_day_result = None
 five_day_summary = None
-if RUN_FIVE_DAY_SAMPLER:
+if RUN_CPU_NESSAI:
     five_day_result, five_day_summary = run_nested_sampler(five_day_window, five_day_search, five_day_FIM, label="task_five_day", smoke_test=USE_SMOKE_TEST_SAMPLER)
 else:
-    print("RUN_FIVE_DAY_SAMPLER=False. Modified-window sampler code is present but not executed.")
+    print("RUN_CPU_NESSAI=False. Modified-window CPU sampler code is present but not executed.")
 """
     ),
     md("## 15. Baseline vs Modified-Window Comparison"),
@@ -793,6 +835,13 @@ manifest = {
     "baseline_taiji_frame_sky": "figures/task5_subtask2/09_baseline_taiji_frame_sky.png",
     "five_day_taiji_frame_sky": "figures/task5_subtask2/10_five_day_taiji_frame_sky.png",
     "comparison_table": "results/task5_subtask2/baseline_vs_five_day_parameter_summary.csv",
+    "baseline_gpu_preflight": "results/task5_subtask2/baseline_example4_gpu_preflight.json",
+    "baseline_gpu_search": "results/task5_subtask2/baseline_example4_gpu_searched_parameters.json",
+    "baseline_gpu_posterior": "results/task5_subtask2/baseline_example4_gpu_eryn_posterior_summary.csv",
+    "five_day_gpu_preflight": "results/task5_subtask2/task_five_day_gpu_preflight.json",
+    "five_day_gpu_search": "results/task5_subtask2/task_five_day_gpu_searched_parameters.json",
+    "five_day_gpu_posterior": "results/task5_subtask2/task_five_day_gpu_eryn_posterior_summary.csv",
+    "gpu_comparison_table": "results/task5_subtask2/baseline_vs_five_day_gpu_eryn_parameter_summary.csv",
 }
 save_json(manifest, "manifest.json")
 print(json.dumps(manifest, indent=2, ensure_ascii=False))
@@ -800,24 +849,409 @@ print(json.dumps(manifest, indent=2, ensure_ascii=False))
     ),
     md(
         """
-## 18. Final Discussion Notes
+## 18. Official GPU Route: BBHx, GPU F-statistics, and Eryn
+
+The official Triangle-BBH GPU notebooks use `BBHxWaveformGenerator` and
+`BBHxFDTDIResponseGenerator` with `use_gpu=True`. Their sampling path is Eryn
+parallel-tempered MCMC, not Bilby/NESSAI. This section therefore keeps the
+previous NESSAI route intact and adds the GPU route as a separate, reproducible
+path.
+"""
+    ),
+    code(
+        r"""
+WFG_GPU = None
+FDTDI_GPU = None
+
+def initialize_gpu_model():
+    global WFG_GPU, FDTDI_GPU
+    if not USE_GPU_BBHX:
+        print("USE_GPU_BBHX=False; GPU route disabled.")
+        return None, None
+    if not HAS_CUPY:
+        raise RuntimeError("CuPy is not available in this kernel.")
+    if orbit is None:
+        raise RuntimeError("Initialize Orbit before the GPU model.")
+    WFG_GPU = BBHxWaveformGenerator(mode="primary", use_gpu=True)
+    FDTDI_GPU = BBHxFDTDIResponseGenerator(orbit_class=orbit, waveform_generator=WFG_GPU, use_gpu=True)
+    print("Initialized official BBHx GPU waveform and TDI response generators.")
+    return WFG_GPU, FDTDI_GPU
+
+if USE_GPU_BBHX and baseline_window is not None:
+    initialize_gpu_model()
+"""
+    ),
+    code(
+        r"""
+def to_gpu_window(window: dict) -> dict:
+    return dict(
+        frequency=xp.asarray(window["data_frequency"]),
+        data=xp.asarray(window["data_channels_fd"]),
+        inv_covariance=xp.asarray(window["InvCovMat"]),
+    )
+
+def build_gpu_response_kwargs(window: dict, interpolation: bool = True) -> dict:
+    return dict(
+        modes=[(2, 2)],
+        tmin=window["data_time"][0] / DAY,
+        tmax=window["data_time"][-1] / DAY,
+        tc_at_constellation=True,
+        TDIGeneration="2nd",
+        optimal_combination=True,
+        drop_T=True,
+        interpolation=interpolation,
+    )
+
+def run_gpu_preflight(window: dict, label: str = "baseline_example4") -> dict:
+    if FDTDI_GPU is None:
+        raise RuntimeError("Initialize FDTDI_GPU before GPU preflight.")
+    gpu_window = to_gpu_window(window)
+    response_kwargs_interp = build_gpu_response_kwargs(window, interpolation=True)
+    response_kwargs_direct = build_gpu_response_kwargs(window, interpolation=False)
+    wf = FDTDI_GPU.Response(
+        parameters=injected_parameters,
+        freqs=gpu_window["frequency"],
+        **response_kwargs_interp,
+    )
+    residual = gpu_window["data"] - wf
+    residual_norm = float(xp.linalg.norm(residual).get())
+    data_norm = float(xp.linalg.norm(gpu_window["data"]).get())
+    report = {
+        "label": label,
+        "gpu_device_count": int(xp.cuda.runtime.getDeviceCount()),
+        "frequency_bins": int(gpu_window["frequency"].shape[0]),
+        "channels": int(gpu_window["data"].shape[0]),
+        "waveform_shape": tuple(int(i) for i in wf.shape),
+        "data_norm": data_norm,
+        "injection_waveform_norm": float(xp.linalg.norm(wf).get()),
+        "residual_norm": residual_norm,
+        "residual_over_data": residual_norm / data_norm if data_norm else np.nan,
+    }
+    save_json(report, f"{label}_gpu_preflight.json")
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    return dict(gpu_window=gpu_window, response_kwargs_interp=response_kwargs_interp, response_kwargs_direct=response_kwargs_direct, injected_wf=wf, report=report)
+
+baseline_gpu_preflight = None
+if RUN_GPU_PREFLIGHT and baseline_window is not None and FDTDI_GPU is not None:
+    baseline_gpu_preflight = run_gpu_preflight(baseline_window, "baseline_example4")
+else:
+    print("GPU preflight skipped.")
+"""
+    ),
+    code(
+        r"""
+def build_gpu_intrinsic_priors(response_kwargs_direct: dict) -> np.ndarray:
+    return np.array([
+        [5.0, 7.0],
+        [0.01, 0.99],
+        [-0.9, 0.9],
+        [-0.9, 0.9],
+        [response_kwargs_direct["tmin"], response_kwargs_direct["tmax"]],
+        [0.0, TWOPI],
+        [-1.0, 1.0],
+    ])
+
+def run_gpu_fstat_search(window: dict, label: str, maxiter: int = GPU_SEARCH_MAXITER) -> dict:
+    if FDTDI_GPU is None:
+        raise RuntimeError("Initialize FDTDI_GPU before the GPU F-statistics search.")
+    gpu_window = to_gpu_window(window)
+    response_kwargs_interp = build_gpu_response_kwargs(window, interpolation=True)
+    response_kwargs_direct = build_gpu_response_kwargs(window, interpolation=False)
+    intrinsic_param_priors = build_gpu_intrinsic_priors(response_kwargs_direct)
+    Fstat_gpu = Fstatistics(
+        response_generator=FDTDI_GPU,
+        frequency=gpu_window["frequency"],
+        data=gpu_window["data"],
+        invserse_covariance_matrix=gpu_window["inv_covariance"],
+        response_parameters=response_kwargs_interp,
+        use_gpu=True,
+    )
+
+    def cost_function(norm_int_params):
+        try:
+            int_params = norm_int_params.transpose() * (intrinsic_param_priors[:, 1] - intrinsic_param_priors[:, 0]) + intrinsic_param_priors[:, 0]
+            params_in = Fstat_gpu.IntParamArr2ParamDict(int_params.transpose())
+            return -Fstat_gpu.calculate_Fstat_vectorized(intrinsic_parameters=params_in)
+        except xp.linalg.LinAlgError:
+            return np.inf * np.ones(norm_int_params.shape[1])
+
+    n_dim_int = 7
+    bounds = np.array([np.zeros(n_dim_int), np.ones(n_dim_int)]).T
+    DE_result = differential_evolution(
+        func=cost_function,
+        bounds=bounds,
+        x0=None,
+        strategy="best1exp",
+        maxiter=maxiter,
+        popsize=5 * n_dim_int,
+        tol=1e-6,
+        atol=1e-8,
+        mutation=(0.4, 0.95),
+        recombination=0.7,
+        disp=True,
+        vectorized=True,
+        polish=False,
+    )
+    searched_int_params = Fstat_gpu.IntParamArr2ParamDict(DE_result.x * (intrinsic_param_priors[:, 1] - intrinsic_param_priors[:, 0]) + intrinsic_param_priors[:, 0])
+    searched_a = Fstat_gpu.calculate_Fstat(intrinsic_parameters=searched_int_params, return_a=True)
+    searched_ext_params = Fstat_gpu.a_to_extrinsic(searched_a)
+    searched_parameters = dict(searched_int_params, **searched_ext_params)
+    searched_parameters = {k: float(v) for k, v in searched_parameters.items()}
+    searched_wf = FDTDI_GPU.Response(searched_parameters, gpu_window["frequency"], **response_kwargs_interp)
+    save_parameter_dict(searched_parameters, f"{label}_gpu_searched_parameters.json")
+    search_report = {
+        "label": label,
+        "success": bool(DE_result.success),
+        "message": str(DE_result.message),
+        "fun": float(DE_result.fun),
+        "nit": int(DE_result.nit),
+        "nfev": int(DE_result.nfev),
+    }
+    save_json(search_report, f"{label}_gpu_search_report.json")
+    return dict(
+        Fstat=Fstat_gpu,
+        DE_result=DE_result,
+        searched_parameters=searched_parameters,
+        searched_wf=searched_wf,
+        gpu_window=gpu_window,
+        response_kwargs_interp=response_kwargs_interp,
+        response_kwargs_direct=response_kwargs_direct,
+        intrinsic_param_priors=intrinsic_param_priors,
+    )
+
+def plot_gpu_reconstruction(window: dict, gpu_search: dict, filename: str) -> None:
+    searched_wf = gpu_search["searched_wf"].get()
+    plt.figure(figsize=(12, 5))
+    for i, name in enumerate(channel_names):
+        plt.subplot(1, 2, i+1)
+        plt.loglog(window["data_frequency"], np.abs(window["data_channels_fd"][i]), label=f"{name} data", color=BLUE, lw=3, alpha=0.5)
+        plt.loglog(window["data_frequency"], np.abs(searched_wf[i]), label=f"{name} GPU reconstructed", color=RED, lw=1, ls="--")
+        plt.loglog(window["data_frequency"], np.abs(window["data_channels_fd"][i] - searched_wf[i]), label=f"{name} residual", color="grey", lw=1)
+        plt.xlabel("Frequency (Hz)")
+        plt.ylabel("TDI (1/Hz)")
+        plt.ylim(1e-21, 1e-16)
+        plt.legend(loc="upper left")
+    plt.suptitle(f"{window['label']} GPU reconstruction")
+    save_current_figure(filename)
+
+baseline_gpu_search = None
+if RUN_GPU_FSTAT_SEARCH and baseline_window is not None:
+    baseline_gpu_search = run_gpu_fstat_search(baseline_window, "baseline_example4")
+    plot_gpu_reconstruction(baseline_window, baseline_gpu_search, "03_baseline_reconstruction_direct.png")
+else:
+    print("GPU F-statistics search code is present but not executed.")
+"""
+    ),
+    code(
+        r"""
+def run_gpu_fisher_analysis(window: dict, gpu_search: dict) -> MultiChannelFisher:
+    def fisher_waveform_wrapper(param_dict, frequencies):
+        res = FDTDI_GPU.Response(
+            parameters=param_dict,
+            freqs=xp.asarray(frequencies),
+            **gpu_search["response_kwargs_interp"],
+        )
+        return res.get()
+
+    analyze_param_step_dict = {
+        "chirp_mass": -10.0,
+        "mass_ratio": -0.01,
+        "spin_1z": -0.01,
+        "spin_2z": -0.01,
+        "coalescence_time": -0.001,
+        "coalescence_phase": -0.01,
+        "luminosity_distance": -10.0,
+        "inclination": -0.01,
+        "longitude": -0.01,
+        "latitude": -0.01,
+        "psi": -0.01,
+    }
+    FIM_gpu = MultiChannelFisher(
+        waveform_generator=fisher_waveform_wrapper,
+        param_dict=gpu_search["searched_parameters"],
+        analyze_param_step_dict=analyze_param_step_dict,
+        frequency=gpu_search["gpu_window"]["frequency"].get(),
+        inverse_covariance=gpu_search["gpu_window"]["inv_covariance"].get(),
+        verbose=0,
+    )
+    FIM_gpu.auto_test_step()
+    FIM_gpu.calculate_Fisher()
+    FIM_gpu.calculate_errors()
+    pd.DataFrame([{"parameter": k, "fim_error": v} for k, v in FIM_gpu.param_errors.items()]).to_csv(RESULT_DIR / f"{window['label']}_gpu_fisher_errors.csv", index=False)
+    return FIM_gpu
+
+baseline_gpu_FIM = None
+if RUN_GPU_FISHER and baseline_gpu_search is not None:
+    baseline_gpu_FIM = run_gpu_fisher_analysis(baseline_window, baseline_gpu_search)
+    baseline_gpu_search_comparison = compare_search_to_injection(baseline_window, baseline_gpu_search, baseline_gpu_FIM)
+    baseline_gpu_search_comparison.to_csv(RESULT_DIR / "baseline_example4_gpu_search_vs_injection.csv", index=False)
+    display(baseline_gpu_search_comparison)
+else:
+    print("GPU Fisher code is present but not executed.")
+"""
+    ),
+    code(
+        r"""
+def build_gpu_eryn_likelihood(gpu_search: dict) -> Likelihood:
+    Like_gpu = Likelihood(
+        response_generator=FDTDI_GPU,
+        frequency=gpu_search["gpu_window"]["frequency"],
+        data=gpu_search["gpu_window"]["data"],
+        invserse_covariance_matrix=gpu_search["gpu_window"]["inv_covariance"],
+        response_parameters=gpu_search["response_kwargs_direct"],
+        use_gpu=True,
+    )
+    Like_gpu.prepare_het_log_like(base_parameters=ParamDict2ParamArr(gpu_search["searched_parameters"]))
+    return Like_gpu
+
+def run_gpu_eryn_sampler(gpu_search: dict, label: str):
+    from eryn.backends import HDFBackend
+    from eryn.ensemble import EnsembleSampler
+    from eryn.moves import StretchMove
+    from eryn.prior import ProbDistContainer, uniform_dist
+
+    Like_gpu = build_gpu_eryn_likelihood(gpu_search)
+
+    def eryn_like(params):
+        return Like_gpu.het_log_like_vectorized(np.transpose(params))
+
+    truths = np.array(ParamDict2ParamArr(gpu_search["searched_parameters"]))
+    lims = np.array([
+        [truths[0] - 1e-2, truths[0] + 1e-2],
+        [max(0.01, truths[1] - 1e-1), min(0.99, truths[1] + 1e-1)],
+        [max(-0.99, truths[2] - 5e-1), min(0.99, truths[2] + 5e-1)],
+        [max(-0.99, truths[3] - 5e-1), min(0.99, truths[3] + 5e-1)],
+        [truths[4] - 500 / DAY, truths[4] + 500 / DAY],
+        [0.0, TWOPI],
+        [3.5, 5.5],
+        [-1.0, 1.0],
+        [0.0, TWOPI],
+        [-1.0, 1.0],
+        [0.0, PI],
+    ])
+    ndim = 11
+    priors = ProbDistContainer({i: uniform_dist(lims[i][0], lims[i][1]) for i in range(ndim)})
+    priors.use_cupy = False
+    start_lims = truths[:, np.newaxis] + np.array([-1e-3, 1e-3])
+    start_priors = ProbDistContainer({i: uniform_dist(start_lims[i][0], start_lims[i][1]) for i in range(ndim)})
+    start_priors.use_cupy = False
+
+    temps = np.array(list(np.power(2.0, np.arange(GPU_ERYN_NTEMPS - 1))) + [np.inf])
+    backend_path = RESULT_DIR / f"{label}_gpu_eryn_heterodyne.h5"
+    backend = HDFBackend(str(backend_path))
+    probe = EnsembleSampler(
+        GPU_ERYN_NWALKERS,
+        ndim,
+        eryn_like,
+        priors,
+        tempering_kwargs=dict(betas=1.0 / temps),
+        moves=StretchMove(a=2),
+        vectorize=True,
+    )
+    backend.reset(nwalkers=GPU_ERYN_NWALKERS, ndims=ndim, ntemps=GPU_ERYN_NTEMPS, moves=probe.backend.move_keys)
+    ensemble = EnsembleSampler(
+        GPU_ERYN_NWALKERS,
+        ndim,
+        eryn_like,
+        priors,
+        tempering_kwargs=dict(betas=1.0 / temps),
+        moves=probe.moves,
+        backend=backend,
+        vectorize=True,
+    )
+    coords = start_priors.rvs(size=(GPU_ERYN_NTEMPS, GPU_ERYN_NWALKERS))
+    nsteps = int(GPU_ERYN_TOTAL_STEPS / GPU_ERYN_THIN_BY)
+    out = ensemble.run_mcmc(coords, nsteps, burn=0, progress=True, thin_by=GPU_ERYN_THIN_BY)
+    save_json({"backend": str(backend_path), "nsteps": nsteps, "thin_by": GPU_ERYN_THIN_BY, "nwalkers": GPU_ERYN_NWALKERS, "ntemps": GPU_ERYN_NTEMPS}, f"{label}_gpu_eryn_run_config.json")
+    return ensemble, out
+
+def summarize_gpu_eryn_chain(ensemble, label: str) -> pd.DataFrame:
+    chain = ensemble.get_chain(thin=GPU_ERYN_POST_THIN, discard=GPU_ERYN_POST_BURNIN)["model_0"]
+    cold = chain[:, 0, :, 0, :].reshape(-1, chain.shape[-1])
+    rows = []
+    for params in cold:
+        rows.append(ParamArr2ParamDict(params))
+    samples = pd.DataFrame(rows)
+    summary = posterior_summary(samples, ["chirp_mass", "mass_ratio", "spin_1z", "spin_2z", "coalescence_time", "coalescence_phase", "luminosity_distance", "inclination", "longitude", "latitude", "psi"])
+    samples.to_csv(RESULT_DIR / f"{label}_gpu_eryn_posterior_samples.csv", index=False)
+    summary.to_csv(RESULT_DIR / f"{label}_gpu_eryn_posterior_summary.csv", index=False)
+    return summary
+
+baseline_gpu_ensemble = None
+baseline_gpu_summary = None
+if RUN_GPU_ERYN_SAMPLER and baseline_gpu_search is not None:
+    baseline_gpu_ensemble, baseline_gpu_out = run_gpu_eryn_sampler(baseline_gpu_search, label="baseline_example4")
+    baseline_gpu_summary = summarize_gpu_eryn_chain(baseline_gpu_ensemble, label="baseline_example4")
+    display(baseline_gpu_summary)
+else:
+    print("GPU Eryn sampler code is present but not executed.")
+"""
+    ),
+    md("## 19. Official GPU Route on the Task 5-Day Window"),
+    code(
+        r"""
+five_day_gpu_preflight = None
+if RUN_GPU_PREFLIGHT and five_day_window is not None and FDTDI_GPU is not None:
+    five_day_gpu_preflight = run_gpu_preflight(five_day_window, "task_five_day")
+else:
+    print("5-day GPU preflight skipped.")
+
+five_day_gpu_search = None
+if RUN_GPU_FSTAT_SEARCH and five_day_window is not None:
+    five_day_gpu_search = run_gpu_fstat_search(five_day_window, "task_five_day")
+    plot_gpu_reconstruction(five_day_window, five_day_gpu_search, "07_five_day_reconstruction_direct.png")
+else:
+    print("5-day GPU F-statistics search code is present but not executed.")
+
+five_day_gpu_FIM = None
+if RUN_GPU_FISHER and five_day_gpu_search is not None:
+    five_day_gpu_FIM = run_gpu_fisher_analysis(five_day_window, five_day_gpu_search)
+    five_day_gpu_search_comparison = compare_search_to_injection(five_day_window, five_day_gpu_search, five_day_gpu_FIM)
+    five_day_gpu_search_comparison.to_csv(RESULT_DIR / "task_five_day_gpu_search_vs_injection.csv", index=False)
+    display(five_day_gpu_search_comparison)
+else:
+    print("5-day GPU Fisher code is present but not executed.")
+
+five_day_gpu_ensemble = None
+five_day_gpu_summary = None
+if RUN_GPU_ERYN_SAMPLER and five_day_gpu_search is not None:
+    five_day_gpu_ensemble, five_day_gpu_out = run_gpu_eryn_sampler(five_day_gpu_search, label="task_five_day")
+    five_day_gpu_summary = summarize_gpu_eryn_chain(five_day_gpu_ensemble, label="task_five_day")
+    display(five_day_gpu_summary)
+else:
+    print("5-day GPU Eryn sampler code is present but not executed.")
+"""
+    ),
+    md("## 20. GPU Baseline vs Modified-Window Comparison"),
+    code(
+        r"""
+gpu_comparison = pd.DataFrame(columns=["parameter", "baseline_median", "baseline_ci90_low", "baseline_ci90_high", "baseline_ci90_width", "five_day_median", "five_day_ci90_low", "five_day_ci90_high", "five_day_ci90_width", "ci90_width_ratio_5day_over_baseline"])
+if baseline_gpu_summary is not None and five_day_gpu_summary is not None:
+    gpu_comparison = compare_summaries(baseline_gpu_summary, five_day_gpu_summary)
+    gpu_comparison.to_csv(RESULT_DIR / "baseline_vs_five_day_gpu_eryn_parameter_summary.csv", index=False)
+display(gpu_comparison)
+"""
+    ),
+    md(
+        """
+## 21. Final Discussion Notes
 
 Complete this section after the full runs finish.
 
 Report these points in the README:
 
-1. Whether official Example 4 was reproduced.
+1. Whether official Example 4 data handling and window construction were reproduced.
 2. Baseline window: `tc - 2.5 days` to `tc + 2.5 days`.
 3. Modified task window: `tc - 4 days` to `tc + 1 day`.
-4. Whether the modified window changes search parameters, reconstruction residuals, Fisher estimates, or posterior credible intervals.
+4. Whether the official GPU route changes search parameters, reconstruction residuals, Fisher estimates, or posterior credible intervals.
 5. Which parameters improve most and which remain degenerate or multimodal.
-6. Limitations: idealized single-bright-MBHB assumption, simplified noise treatment, possible multimodality, and local Windows environment constraints.
+6. Limitations: Eryn posterior sampling does not report NESSAI evidence/logZ, possible multimodality, and local GPU memory constraints.
 
 Conclusion draft:
 
-- Baseline reproduction: TODO after TDC data and sampler run.
-- Modified 5-day run: TODO after TDC data and sampler run.
-- Quantitative posterior comparison: TODO after both posterior summaries are generated.
+- Baseline GPU run: TODO after GPU search and Eryn sampler finish.
+- Modified 5-day GPU run: TODO after GPU search and Eryn sampler finish.
+- Quantitative posterior comparison: TODO after both GPU posterior summaries are generated.
 """
     ),
 ]
@@ -825,9 +1259,9 @@ Conclusion draft:
 nb = nbf.v4.new_notebook()
 nb.metadata = {
     "kernelspec": {
-        "display_name": "Python (task5-tdc)",
+        "display_name": "Python (tri_env-task5-wsl2)",
         "language": "python",
-        "name": "task5-tdc",
+        "name": "tri_env-task5-wsl2",
     },
     "language_info": {"name": "python", "pygments_lexer": "ipython3"},
 }

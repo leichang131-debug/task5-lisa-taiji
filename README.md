@@ -125,10 +125,10 @@ notebooks/02_taiji_mbhb_parameter_estimation.ipynb
 Main goals:
 
 1. Install and run Triangle-BBH following its README.
-2. Reproduce Example 4 as the baseline result.
+2. Reproduce Example 4 data handling as the baseline result.
 3. Understand TDI data, Fourier transform, massive black-hole binary waveform, and Bayesian inference.
 4. Extend the parameter-estimation data window to 5 days: 4 days before `coalescence_time` and 1 day after it.
-5. Re-run the inference pipeline and compare the posterior results with the baseline.
+5. Replace the slow CPU nested-sampling stage with the official GPU route: Example 5 GPU F-statistics search plus Example 2 GPU heterodyned Eryn sampling.
 6. Save corner plots, trace plots, and parameter comparison tables under `figures/task5_subtask2/`.
 
 Official Example 4 data files:
@@ -137,6 +137,16 @@ Official Example 4 data files:
 - `0_2_MBHB_parameters.h5`: https://zenodo.org/records/15532090/files/0_2_MBHB_parameters.h5?download=1
 
 The subtask 2 notebook first reproduces the official symmetric baseline window, `tc - 2.5 days` to `tc + 2.5 days`, and then rebuilds the full pipeline for the required asymmetric 5-day window, `tc - 4 days` to `tc + 1 day`.
+
+Current main route:
+
+```text
+Example 4 data loading / A,E construction / FFT / PSD / covariance / windows
++ Example 5 BBHx GPU F-statistics search
++ Example 2 GPU heterodyned Eryn posterior sampling
+```
+
+The CPU Bilby/NESSAI path is retained in the notebook as a reference fallback, but it is not the default route because the local run is much slower. The previous CPU NESSAI attempt ran for about 4 hours and still had `dlogZ ~ 1497`, far from the `stopping=0.1` target.
 
 Current subtask 2 outputs:
 
@@ -158,6 +168,10 @@ Current quantitative summaries:
 - [Baseline posterior summary](results/task5_subtask2/baseline_example4_posterior_summary.csv)
 - [Task 5-day posterior summary](results/task5_subtask2/task_five_day_posterior_summary.csv)
 - [Baseline vs 5-day posterior comparison](results/task5_subtask2/baseline_vs_five_day_parameter_summary.csv)
+- [Baseline GPU preflight](results/task5_subtask2/baseline_example4_gpu_preflight.json)
+- Baseline GPU outputs after the production run: `baseline_example4_gpu_search_vs_injection.csv`, `baseline_example4_gpu_eryn_posterior_summary.csv`
+- Task 5-day GPU outputs after the production run: `task_five_day_gpu_search_vs_injection.csv`, `task_five_day_gpu_eryn_posterior_summary.csv`
+- Final GPU comparison after both production runs: `baseline_vs_five_day_gpu_eryn_parameter_summary.csv`
 
 Subtask 2 interpretation:
 
@@ -165,7 +179,7 @@ The real TDC II files were loaded from `0_2_MBHB_TDIXYZ.h5` and `0_2_MBHB_parame
 
 The 100-iteration validation F-statistics search recovers the intrinsic parameters at a useful level for notebook verification: baseline chirp-mass error is about `7.31e3 Msun`, mass-ratio error is `2.80e-4`, and spin errors are `7.98e-3` and `2.21e-2`; for the required 5-day window, chirp-mass error is about `1.15e4 Msun`, mass-ratio error is `3.74e-3`, and spin errors are `6.27e-3` and `3.42e-2`. Sky angles show the expected degeneracy structure, so both direct and reflected reconstructions are saved and compared.
 
-The Windows-local posterior run uses `bilby==1.0.0` with `dynesty==1.0.1` as a smoke sampler because this bilby version does not expose the official NESSAI sampler on Windows. The resulting 90% credible-interval comparison is therefore a pipeline-validation posterior, not the final official NESSAI production posterior. In this run, the required 5-day window gives narrower 90% intervals than the baseline for chirp mass, mass ratio, luminosity distance, reference time, and both aligned spins, while inclination and reference phase broaden. The full numerical table is in `results/task5_subtask2/baseline_vs_five_day_parameter_summary.csv`.
+The previous Windows-local posterior run used `bilby==1.0.0` with `dynesty==1.0.1` as a smoke sampler. Those CSV files are kept only as historical pipeline-validation outputs. The current production plan is the WSL2 GPU route above. The GPU preflight has already passed on the real TDC data with one CUDA device and a `2 x 4298` A/E frequency-domain data array.
 
 ## Environment
 
@@ -182,6 +196,18 @@ conda env create -f environment.yml
 conda activate task5-lisa-taiji
 ```
 
+For the WSL2 GPU route used by subtask 2, use `environment-wsl-gpu.yml` as the reproducible dependency record and then compile BBHx from the official Triangle-BBH source inside WSL2. The local `tri_env` setup was verified with `cupy`, `bbhx`, `healpy`, `pycbc`, `nessai`, and `eryn`; CUDA compiler packages were pinned to the CUDA 12.6 series to match the current NVIDIA 12.7 driver. The helper script below recreates the `CUDAHOME` compatibility directory expected by BBHx:
+
+```bash
+bash scripts/setup_wsl_cuda_home.sh
+```
+
+The short GPU sanity check is:
+
+```bash
+python scripts/gpu_subtask2_preflight.py
+```
+
 Triangle-BBH and Triangle-Simulator may require a separate Linux or WSL2 environment. See the official repositories:
 
 - Triangle-BBH: https://github.com/TriangleDataCenter/Triangle-BBH
@@ -190,13 +216,14 @@ Triangle-BBH and Triangle-Simulator may require a separate Linux or WSL2 environ
 ## Run Order
 
 1. Run `notebooks/01_ldc_time_frequency_visualization.ipynb` for subtask 1.
-2. Clone and run the original Triangle-BBH Example 4 for baseline reproduction.
-3. Run or adapt `notebooks/02_taiji_mbhb_parameter_estimation.ipynb` for the 5-day window experiment.
-4. For a full production posterior, rerun the same notebook in a Linux or WSL2 conda environment with the official NESSAI-compatible Triangle-BBH stack and set `USE_SMOKE_TEST_SAMPLER = False`.
+2. Run `notebooks/02_taiji_mbhb_parameter_estimation.ipynb` with the `tri_env-task5-wsl2` kernel.
+3. The notebook default main route now runs GPU preflight, GPU F-statistics search, GPU Fisher analysis, and GPU heterodyned Eryn sampling for both the baseline and task 5-day windows.
+4. Keep `RUN_CPU_EXAMPLE4_FSTAT = False` and `RUN_CPU_NESSAI = False` unless you explicitly want the slower CPU reference route.
+5. For timing diagnostics only, run `python scripts/gpu_subtask2_benchmark.py`.
 
 ## Remaining Work
 
-Subtask 2 is implemented and verified locally on the real TDC data. The remaining production upgrade is to run the official full NESSAI sampler in a Linux or WSL2 environment; the current Windows result is intentionally marked as a dynesty smoke posterior for pipeline validation.
+Subtask 2 is implemented on the real TDC data. The remaining production step is to run the notebook's default GPU route to completion and inspect Eryn trace/mixing diagnostics before treating the posterior summaries as final.
 
 ## Notes
 

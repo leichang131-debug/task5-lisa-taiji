@@ -20,4 +20,7 @@ dependencies:
       - dynesty==1.0.1
       - emcee>=3.1
       - nessai>=0.15
+      - cupy-cuda12x>=13.0
+      - healpy>=1.17
+      - pycbc>=2.6
       - git+https://github.com/XGI-MSU/WDMWaveletTransforms.git

@@ -1,0 +1,40 @@
+name: tri_env
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9
+  - numpy
+  - scipy
+  - matplotlib
+  - h5py
+  - pandas
+  - jupyter
+  - notebook
+  - ipykernel
+  - tqdm
+  - corner
+  - cython
+  - gsl
+  - gcc_linux-64=12
+  - gxx_linux-64=12
+  - cuda-version=12.6
+  - cuda-nvcc-dev_linux-64=12.6
+  - cuda-cudart-dev=12.6
+  - cuda-nvrtc-dev=12.6
+  - cuda-cccl=12.6
+  - libcublas-dev=12.6
+  - libcusparse-dev=12.5
+  - libblas=*=*openblas
+  - liblapack=*=*openblas
+  - openblas
+  - pip
+  - pip:
+      - bilby==1.0.0
+      - dynesty==1.0.1
+      - emcee>=3.1
+      - eryn>=1.2
+      - nessai>=0.15
+      - cupy-cuda12x>=13.0
+      - healpy>=1.17
+      - pycbc>=2.6
+      - git+https://github.com/XGI-MSU/WDMWaveletTransforms.git

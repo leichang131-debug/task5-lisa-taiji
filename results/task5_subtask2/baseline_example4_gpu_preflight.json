@@ -1,0 +1,18 @@
+{
+  "cuda_device_count": 1,
+  "frequency_bins": 4298,
+  "data_shape": [
+    2,
+    4298
+  ],
+  "waveform_shape": [
+    2,
+    4298
+  ],
+  "data_norm": 2.2735906993433865e-16,
+  "waveform_norm": 1.5876858050222117e-16,
+  "residual_norm": 2.521444768755892e-16,
+  "heterodyned_log_likelihood_at_injection": -383859.5730214827,
+  "cuda_home": "/opt/miniforge3/envs/tri_env/cuda-home",
+  "cuda_path": "/opt/miniforge3/envs/tri_env/targets/x86_64-linux"
+}
