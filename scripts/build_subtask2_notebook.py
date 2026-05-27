@@ -160,12 +160,20 @@ SMOKE_TEST_SAMPLER_SETTINGS = dict(sampler="dynesty", nlive=80, dlogz=10.0, maxc
 SAMPLER_POOL = 1 if os.name == "nt" else os.cpu_count()
 
 GPU_SEARCH_MAXITER = OFFICIAL_SEARCH_MAXITER
-GPU_ERYN_NWALKERS = 400
-GPU_ERYN_NTEMPS = 10
+GPU_ERYN_RUN_MODE = "quick_check"
+GPU_ERYN_FULL_NWALKERS = 400
+GPU_ERYN_FULL_NTEMPS = 10
+GPU_ERYN_QUICK_NWALKERS = 80
+GPU_ERYN_QUICK_NTEMPS = 4
+GPU_ERYN_NWALKERS = GPU_ERYN_QUICK_NWALKERS if GPU_ERYN_RUN_MODE == "quick_check" else GPU_ERYN_FULL_NWALKERS
+GPU_ERYN_NTEMPS = GPU_ERYN_QUICK_NTEMPS if GPU_ERYN_RUN_MODE == "quick_check" else GPU_ERYN_FULL_NTEMPS
 GPU_ERYN_THIN_BY = 100
-GPU_ERYN_TOTAL_STEPS = 100000
-GPU_ERYN_POST_BURNIN = 200
-GPU_ERYN_POST_THIN = 10
+GPU_ERYN_FULL_TOTAL_STEPS = 100000
+GPU_ERYN_STAGED_TOTAL_STEPS = 10000
+GPU_ERYN_QUICK_TOTAL_STEPS = 1000
+GPU_ERYN_TOTAL_STEPS = GPU_ERYN_QUICK_TOTAL_STEPS if GPU_ERYN_RUN_MODE == "quick_check" else (GPU_ERYN_STAGED_TOTAL_STEPS if GPU_ERYN_RUN_MODE == "staged_check" else GPU_ERYN_FULL_TOTAL_STEPS)
+GPU_ERYN_POST_BURNIN = 2 if GPU_ERYN_RUN_MODE == "quick_check" else (20 if GPU_ERYN_RUN_MODE == "staged_check" else 200)
+GPU_ERYN_POST_THIN = 1 if GPU_ERYN_RUN_MODE == "quick_check" else (2 if GPU_ERYN_RUN_MODE == "staged_check" else 10)
 
 CANDIDATE_TDC_ROOTS = [
     REPO_ROOT / "data" / "tdc",
@@ -1105,7 +1113,6 @@ def build_gpu_eryn_likelihood(gpu_search: dict) -> Likelihood:
     return Like_gpu
 
 def run_gpu_eryn_sampler(gpu_search: dict, label: str):
-    from eryn.backends import HDFBackend
     from eryn.ensemble import EnsembleSampler
     from eryn.moves import StretchMove
     from eryn.prior import ProbDistContainer, uniform_dist
@@ -1137,9 +1144,7 @@ def run_gpu_eryn_sampler(gpu_search: dict, label: str):
     start_priors.use_cupy = False
 
     temps = np.array(list(np.power(2.0, np.arange(GPU_ERYN_NTEMPS - 1))) + [np.inf])
-    backend_path = RESULT_DIR / f"{label}_gpu_eryn_heterodyne.h5"
-    backend = HDFBackend(str(backend_path))
-    probe = EnsembleSampler(
+    ensemble = EnsembleSampler(
         GPU_ERYN_NWALKERS,
         ndim,
         eryn_like,
@@ -1148,21 +1153,10 @@ def run_gpu_eryn_sampler(gpu_search: dict, label: str):
         moves=StretchMove(a=2),
         vectorize=True,
     )
-    backend.reset(nwalkers=GPU_ERYN_NWALKERS, ndims=ndim, ntemps=GPU_ERYN_NTEMPS, moves=probe.backend.move_keys)
-    ensemble = EnsembleSampler(
-        GPU_ERYN_NWALKERS,
-        ndim,
-        eryn_like,
-        priors,
-        tempering_kwargs=dict(betas=1.0 / temps),
-        moves=probe.moves,
-        backend=backend,
-        vectorize=True,
-    )
     coords = start_priors.rvs(size=(GPU_ERYN_NTEMPS, GPU_ERYN_NWALKERS))
     nsteps = int(GPU_ERYN_TOTAL_STEPS / GPU_ERYN_THIN_BY)
     out = ensemble.run_mcmc(coords, nsteps, burn=0, progress=True, thin_by=GPU_ERYN_THIN_BY)
-    save_json({"backend": str(backend_path), "nsteps": nsteps, "thin_by": GPU_ERYN_THIN_BY, "nwalkers": GPU_ERYN_NWALKERS, "ntemps": GPU_ERYN_NTEMPS}, f"{label}_gpu_eryn_run_config.json")
+    save_json({"backend": None, "run_mode": GPU_ERYN_RUN_MODE, "nsteps": nsteps, "thin_by": GPU_ERYN_THIN_BY, "total_steps": GPU_ERYN_TOTAL_STEPS, "full_total_steps": GPU_ERYN_FULL_TOTAL_STEPS, "nwalkers": GPU_ERYN_NWALKERS, "ntemps": GPU_ERYN_NTEMPS, "full_nwalkers": GPU_ERYN_FULL_NWALKERS, "full_ntemps": GPU_ERYN_FULL_NTEMPS, "post_burnin": GPU_ERYN_POST_BURNIN, "post_thin": GPU_ERYN_POST_THIN}, f"{label}_gpu_eryn_run_config.json")
     return ensemble, out
 
 def summarize_gpu_eryn_chain(ensemble, label: str) -> pd.DataFrame:

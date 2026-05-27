@@ -1,0 +1,8 @@
+{
+  "label": "baseline_example4",
+  "success": true,
+  "message": "Optimization terminated successfully.",
+  "fun": -594051.4868135639,
+  "nit": 178,
+  "nfev": 179
+}

@@ -1,0 +1,8 @@
+{
+  "label": "task_five_day",
+  "success": true,
+  "message": "Optimization terminated successfully.",
+  "fun": -595034.3252433292,
+  "nit": 200,
+  "nfev": 201
+}

@@ -1,0 +1,14 @@
+{
+  "label": "task_five_day",
+  "gpu_device_count": 1,
+  "frequency_bins": 4299,
+  "channels": 2,
+  "waveform_shape": [
+    2,
+    4299
+  ],
+  "data_norm": 2.264724774921795e-16,
+  "injection_waveform_norm": 1.5877238586461167e-16,
+  "residual_norm": 2.513466219128435e-16,
+  "residual_over_data": 1.1098329682092296
+}

@@ -1,0 +1,14 @@
+{
+  "backend": null,
+  "run_mode": "quick_check",
+  "nsteps": 10,
+  "thin_by": 100,
+  "total_steps": 1000,
+  "full_total_steps": 100000,
+  "nwalkers": 80,
+  "ntemps": 4,
+  "full_nwalkers": 400,
+  "full_ntemps": 10,
+  "post_burnin": 2,
+  "post_thin": 1
+}

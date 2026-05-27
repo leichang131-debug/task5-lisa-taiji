@@ -169,9 +169,12 @@ Current quantitative summaries:
 - [Task 5-day posterior summary](results/task5_subtask2/task_five_day_posterior_summary.csv)
 - [Baseline vs 5-day posterior comparison](results/task5_subtask2/baseline_vs_five_day_parameter_summary.csv)
 - [Baseline GPU preflight](results/task5_subtask2/baseline_example4_gpu_preflight.json)
-- Baseline GPU outputs after the production run: `baseline_example4_gpu_search_vs_injection.csv`, `baseline_example4_gpu_eryn_posterior_summary.csv`
-- Task 5-day GPU outputs after the production run: `task_five_day_gpu_search_vs_injection.csv`, `task_five_day_gpu_eryn_posterior_summary.csv`
-- Final GPU comparison after both production runs: `baseline_vs_five_day_gpu_eryn_parameter_summary.csv`
+- [Baseline GPU search vs injection](results/task5_subtask2/baseline_example4_gpu_search_vs_injection.csv)
+- [Baseline GPU Eryn posterior summary](results/task5_subtask2/baseline_example4_gpu_eryn_posterior_summary.csv)
+- [Task 5-day GPU preflight](results/task5_subtask2/task_five_day_gpu_preflight.json)
+- [Task 5-day GPU search vs injection](results/task5_subtask2/task_five_day_gpu_search_vs_injection.csv)
+- [Task 5-day GPU Eryn posterior summary](results/task5_subtask2/task_five_day_gpu_eryn_posterior_summary.csv)
+- [Baseline vs 5-day GPU Eryn comparison](results/task5_subtask2/baseline_vs_five_day_gpu_eryn_parameter_summary.csv)
 
 Subtask 2 interpretation:
 
@@ -179,7 +182,7 @@ The real TDC II files were loaded from `0_2_MBHB_TDIXYZ.h5` and `0_2_MBHB_parame
 
 The 100-iteration validation F-statistics search recovers the intrinsic parameters at a useful level for notebook verification: baseline chirp-mass error is about `7.31e3 Msun`, mass-ratio error is `2.80e-4`, and spin errors are `7.98e-3` and `2.21e-2`; for the required 5-day window, chirp-mass error is about `1.15e4 Msun`, mass-ratio error is `3.74e-3`, and spin errors are `6.27e-3` and `3.42e-2`. Sky angles show the expected degeneracy structure, so both direct and reflected reconstructions are saved and compared.
 
-The previous Windows-local posterior run used `bilby==1.0.0` with `dynesty==1.0.1` as a smoke sampler. Those CSV files are kept only as historical pipeline-validation outputs. The current production plan is the WSL2 GPU route above. The GPU preflight has already passed on the real TDC data with one CUDA device and a `2 x 4298` A/E frequency-domain data array.
+The previous Windows-local posterior run used `bilby==1.0.0` with `dynesty==1.0.1` as a smoke sampler. Those CSV files are kept only as historical pipeline-validation outputs. The current WSL2 GPU route has passed a full end-to-end quick check on the real TDC data for both windows. The quick check uses the same BBHx GPU response, F-statistics, Fisher, and heterodyned Eryn code path as the full run, but with reduced Eryn settings (`80` walkers, `4` temperatures, `1000` total steps) so it is a pipeline-validation posterior rather than the final production posterior. The full official-scale settings (`400` walkers, `10` temperatures, `100000` total steps) are retained in the notebook variables and run config JSON files for a later long run.
 
 ## Environment
 
@@ -219,11 +222,12 @@ Triangle-BBH and Triangle-Simulator may require a separate Linux or WSL2 environ
 2. Run `notebooks/02_taiji_mbhb_parameter_estimation.ipynb` with the `tri_env-task5-wsl2` kernel.
 3. The notebook default main route now runs GPU preflight, GPU F-statistics search, GPU Fisher analysis, and GPU heterodyned Eryn sampling for both the baseline and task 5-day windows.
 4. Keep `RUN_CPU_EXAMPLE4_FSTAT = False` and `RUN_CPU_NESSAI = False` unless you explicitly want the slower CPU reference route.
-5. For timing diagnostics only, run `python scripts/gpu_subtask2_benchmark.py`.
+5. Use `GPU_ERYN_RUN_MODE = "quick_check"` to verify the complete notebook quickly; switch to `GPU_ERYN_RUN_MODE = "full"` for the long official-scale Eryn run.
+6. For timing diagnostics only, run `python scripts/gpu_subtask2_benchmark.py`.
 
 ## Remaining Work
 
-Subtask 2 is implemented on the real TDC data. The remaining production step is to run the notebook's default GPU route to completion and inspect Eryn trace/mixing diagnostics before treating the posterior summaries as final.
+Subtask 2 is implemented and the WSL2 GPU route has been executed end to end in quick-check mode on the real TDC data. The remaining production step is to run the same notebook in full Eryn mode and inspect trace/mixing diagnostics before treating the posterior summaries as final.
 
 ## Notes
 
