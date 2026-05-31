@@ -170,9 +170,11 @@ Current quantitative summaries:
 - [Baseline vs 5-day posterior comparison](results/task5_subtask2/baseline_vs_five_day_parameter_summary.csv)
 - [Baseline GPU preflight](results/task5_subtask2/baseline_example4_gpu_preflight.json)
 - [Baseline GPU search vs injection](results/task5_subtask2/baseline_example4_gpu_search_vs_injection.csv)
+- [Baseline GPU reflected search parameters](results/task5_subtask2/baseline_example4_gpu_searched_parameters_reflected.json)
 - [Baseline GPU Eryn posterior summary](results/task5_subtask2/baseline_example4_gpu_eryn_posterior_summary.csv)
 - [Task 5-day GPU preflight](results/task5_subtask2/task_five_day_gpu_preflight.json)
 - [Task 5-day GPU search vs injection](results/task5_subtask2/task_five_day_gpu_search_vs_injection.csv)
+- [Task 5-day GPU reflected search parameters](results/task5_subtask2/task_five_day_gpu_searched_parameters_reflected.json)
 - [Task 5-day GPU Eryn posterior summary](results/task5_subtask2/task_five_day_gpu_eryn_posterior_summary.csv)
 - [Baseline vs 5-day GPU Eryn comparison](results/task5_subtask2/baseline_vs_five_day_gpu_eryn_parameter_summary.csv)
 
@@ -180,9 +182,13 @@ Subtask 2 interpretation:
 
 The real TDC II files were loaded from `0_2_MBHB_TDIXYZ.h5` and `0_2_MBHB_parameters.h5`. Both the official baseline window and the required asymmetric 5-day window contain 43,201 samples at `dt = 10 s`, use A/E channels after the XYZ-to-AET conversion, and keep the same frequency band, `5e-5 Hz <= f <= 1e-2 Hz`.
 
-The 100-iteration validation F-statistics search recovers the intrinsic parameters at a useful level for notebook verification: baseline chirp-mass error is about `7.31e3 Msun`, mass-ratio error is `2.80e-4`, and spin errors are `7.98e-3` and `2.21e-2`; for the required 5-day window, chirp-mass error is about `1.15e4 Msun`, mass-ratio error is `3.74e-3`, and spin errors are `6.27e-3` and `3.42e-2`. Sky angles show the expected degeneracy structure, so both direct and reflected reconstructions are saved and compared.
+The 100-iteration validation F-statistics search recovers the intrinsic parameters at a useful level for notebook verification: baseline chirp-mass error is about `7.31e3 Msun`, mass-ratio error is `2.80e-4`, and spin errors are `7.98e-3` and `2.21e-2`; for the required 5-day window, chirp-mass error is about `1.15e4 Msun`, mass-ratio error is `3.74e-3`, and spin errors are `6.27e-3` and `3.42e-2`. The sky/extrinsic maximum currently lands on the ecliptic-plane reflected branch rather than the injected sky branch. The notebook therefore writes both the direct search parameters and the `Triangle_BBH.Utils.get_reflected_parameter_dict` reflected parameters, and the search-vs-injection CSV files include `reflected` and `reflected_abs_error` columns for every comparable parameter. The direct and reflected reconstruction figures should be inspected together.
 
-The previous Windows-local posterior run used `bilby==1.0.0` with `dynesty==1.0.1` as a smoke sampler. Those CSV files are kept only as historical pipeline-validation outputs. The current WSL2 GPU route has passed a full end-to-end quick check on the real TDC data for both windows. The quick check uses the same BBHx GPU response, F-statistics, Fisher, and heterodyned Eryn code path as the full run, but with reduced Eryn settings (`80` walkers, `4` temperatures, `1000` total steps) so it is a pipeline-validation posterior rather than the final production posterior. The full official-scale settings (`400` walkers, `10` temperatures, `100000` total steps) are retained in the notebook variables and run config JSON files for a later long run.
+The GPU preflight JSON files now include `log_likelihood_at_injection` / `heterodyned_log_likelihood_at_injection`, computed with the same heterodyned likelihood object used by the GPU Eryn route. These fields are intended as a sanity check that the likelihood can be evaluated at the injected parameters before long sampling starts.
+
+The previous Windows-local posterior run used `bilby==1.0.0` with `dynesty==1.0.1` as a smoke sampler. Those CSV files are kept only as historical pipeline-validation outputs. The current WSL2 GPU route has passed a full end-to-end quick check on the real TDC data for both windows. The quick check uses the same BBHx GPU response, F-statistics, Fisher, and heterodyned Eryn code path as the full run, but with reduced Eryn settings (`80` walkers, `4` temperatures, `1000` total steps) so it is a pipeline-validation posterior rather than the final production posterior. The resulting CI90 widths and baseline-vs-5-day comparisons must not be interpreted as scientific conclusions until the full run converges.
+
+Because the current production route uses Eryn MCMC rather than nested sampling, it does not provide a Bayesian evidence (`log Z`) estimate for model comparison. After the full run, Section 21 of the notebook should discuss trace plots, autocorrelation or effective-sample diagnostics, the direct/reflected-sky degeneracy, and possible PSD-estimation differences between the symmetric baseline and asymmetric 5-day windows before reporting final posterior conclusions.
 
 ## Environment
 

@@ -792,6 +792,10 @@ def compare_summaries(baseline_summary: pd.DataFrame, five_day_summary: pd.DataF
     base = baseline_summary.add_prefix("baseline_").rename(columns={"baseline_parameter": "parameter"})
     five = five_day_summary.add_prefix("five_day_").rename(columns={"five_day_parameter": "parameter"})
     merged = pd.merge(base, five, on="parameter", how="outer")
+    expected = set(PARAMETERS_TO_COMPARE) | {"coalescence_time", "coalescence_phase"}
+    missing = sorted(expected - set(merged["parameter"].dropna()))
+    if missing:
+        print("Warning: comparison table is missing parameters:", missing)
     merged["ci90_width_ratio_5day_over_baseline"] = merged["five_day_ci90_width"] / merged["baseline_ci90_width"]
     return merged
 
@@ -845,9 +849,11 @@ manifest = {
     "comparison_table": "results/task5_subtask2/baseline_vs_five_day_parameter_summary.csv",
     "baseline_gpu_preflight": "results/task5_subtask2/baseline_example4_gpu_preflight.json",
     "baseline_gpu_search": "results/task5_subtask2/baseline_example4_gpu_searched_parameters.json",
+    "baseline_gpu_reflected_search": "results/task5_subtask2/baseline_example4_gpu_searched_parameters_reflected.json",
     "baseline_gpu_posterior": "results/task5_subtask2/baseline_example4_gpu_eryn_posterior_summary.csv",
     "five_day_gpu_preflight": "results/task5_subtask2/task_five_day_gpu_preflight.json",
     "five_day_gpu_search": "results/task5_subtask2/task_five_day_gpu_searched_parameters.json",
+    "five_day_gpu_reflected_search": "results/task5_subtask2/task_five_day_gpu_searched_parameters_reflected.json",
     "five_day_gpu_posterior": "results/task5_subtask2/task_five_day_gpu_eryn_posterior_summary.csv",
     "gpu_comparison_table": "results/task5_subtask2/baseline_vs_five_day_gpu_eryn_parameter_summary.csv",
 }
@@ -924,6 +930,17 @@ def run_gpu_preflight(window: dict, label: str = "baseline_example4") -> dict:
     residual = gpu_window["data"] - wf
     residual_norm = float(xp.linalg.norm(residual).get())
     data_norm = float(xp.linalg.norm(gpu_window["data"]).get())
+    Like_preflight = Likelihood(
+        response_generator=FDTDI_GPU,
+        frequency=gpu_window["frequency"],
+        data=gpu_window["data"],
+        invserse_covariance_matrix=gpu_window["inv_covariance"],
+        response_parameters=response_kwargs_direct,
+        use_gpu=True,
+    )
+    injected_array = ParamDict2ParamArr(injected_parameters)
+    Like_preflight.prepare_het_log_like(base_parameters=injected_array)
+    log_likelihood_at_injection = float(Like_preflight.het_log_like(parameter_array=injected_array))
     report = {
         "label": label,
         "gpu_device_count": int(xp.cuda.runtime.getDeviceCount()),
@@ -934,6 +951,8 @@ def run_gpu_preflight(window: dict, label: str = "baseline_example4") -> dict:
         "injection_waveform_norm": float(xp.linalg.norm(wf).get()),
         "residual_norm": residual_norm,
         "residual_over_data": residual_norm / data_norm if data_norm else np.nan,
+        "log_likelihood_at_injection": log_likelihood_at_injection,
+        "heterodyned_log_likelihood_at_injection": log_likelihood_at_injection,
     }
     save_json(report, f"{label}_gpu_preflight.json")
     print(json.dumps(report, indent=2, ensure_ascii=False))
@@ -1006,7 +1025,11 @@ def run_gpu_fstat_search(window: dict, label: str, maxiter: int = GPU_SEARCH_MAX
     searched_parameters = dict(searched_int_params, **searched_ext_params)
     searched_parameters = {k: float(v) for k, v in searched_parameters.items()}
     searched_wf = FDTDI_GPU.Response(searched_parameters, gpu_window["frequency"], **response_kwargs_interp)
+    searched_parameters_reflected = get_reflected_parameter_dict(searched_params=searched_parameters, orbit=orbit)
+    searched_parameters_reflected = {k: float(v) for k, v in searched_parameters_reflected.items()}
+    searched_wf_reflected = FDTDI_GPU.Response(searched_parameters_reflected, gpu_window["frequency"], **response_kwargs_interp)
     save_parameter_dict(searched_parameters, f"{label}_gpu_searched_parameters.json")
+    save_parameter_dict(searched_parameters_reflected, f"{label}_gpu_searched_parameters_reflected.json")
     search_report = {
         "label": label,
         "success": bool(DE_result.success),
@@ -1020,7 +1043,9 @@ def run_gpu_fstat_search(window: dict, label: str, maxiter: int = GPU_SEARCH_MAX
         Fstat=Fstat_gpu,
         DE_result=DE_result,
         searched_parameters=searched_parameters,
+        searched_parameters_reflected=searched_parameters_reflected,
         searched_wf=searched_wf,
+        searched_wf_reflected=searched_wf_reflected,
         gpu_window=gpu_window,
         response_kwargs_interp=response_kwargs_interp,
         response_kwargs_direct=response_kwargs_direct,
@@ -1042,10 +1067,29 @@ def plot_gpu_reconstruction(window: dict, gpu_search: dict, filename: str) -> No
     plt.suptitle(f"{window['label']} GPU reconstruction")
     save_current_figure(filename)
 
+def plot_gpu_reflected_reconstruction(window: dict, gpu_search: dict, filename: str) -> None:
+    if "searched_wf_reflected" not in gpu_search:
+        print(f"No reflected GPU waveform available for {window['label']}.")
+        return
+    searched_wf = gpu_search["searched_wf_reflected"].get()
+    plt.figure(figsize=(12, 5))
+    for i, name in enumerate(channel_names):
+        plt.subplot(1, 2, i+1)
+        plt.loglog(window["data_frequency"], np.abs(window["data_channels_fd"][i]), label=f"{name} data", color=BLUE, lw=3, alpha=0.5)
+        plt.loglog(window["data_frequency"], np.abs(searched_wf[i]), label=f"{name} GPU reflected", color=RED, lw=1, ls="--")
+        plt.loglog(window["data_frequency"], np.abs(window["data_channels_fd"][i] - searched_wf[i]), label=f"{name} residual", color="grey", lw=1)
+        plt.xlabel("Frequency (Hz)")
+        plt.ylabel("TDI (1/Hz)")
+        plt.ylim(1e-21, 1e-16)
+        plt.legend(loc="upper left")
+    plt.suptitle(f"{window['label']} GPU reflected reconstruction")
+    save_current_figure(filename)
+
 baseline_gpu_search = None
 if RUN_GPU_FSTAT_SEARCH and baseline_window is not None:
     baseline_gpu_search = run_gpu_fstat_search(baseline_window, "baseline_example4")
     plot_gpu_reconstruction(baseline_window, baseline_gpu_search, "03_baseline_reconstruction_direct.png")
+    plot_gpu_reflected_reconstruction(baseline_window, baseline_gpu_search, "04_baseline_reconstruction_reflected.png")
 else:
     print("GPU F-statistics search code is present but not executed.")
 """
@@ -1194,6 +1238,7 @@ five_day_gpu_search = None
 if RUN_GPU_FSTAT_SEARCH and five_day_window is not None:
     five_day_gpu_search = run_gpu_fstat_search(five_day_window, "task_five_day")
     plot_gpu_reconstruction(five_day_window, five_day_gpu_search, "07_five_day_reconstruction_direct.png")
+    plot_gpu_reflected_reconstruction(five_day_window, five_day_gpu_search, "08_five_day_reconstruction_reflected.png")
 else:
     print("5-day GPU F-statistics search code is present but not executed.")
 

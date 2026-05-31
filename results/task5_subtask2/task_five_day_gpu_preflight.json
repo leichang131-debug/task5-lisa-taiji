@@ -10,5 +10,7 @@
   "data_norm": 2.264724774921795e-16,
   "injection_waveform_norm": 1.5877238586461167e-16,
   "residual_norm": 2.513466219128435e-16,
-  "residual_over_data": 1.1098329682092296
+  "residual_over_data": 1.1098329682092296,
+  "log_likelihood_at_injection": -387456.9530387262,
+  "heterodyned_log_likelihood_at_injection": -387456.9530387262
 }

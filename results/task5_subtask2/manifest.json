@@ -16,5 +16,7 @@
   "five_day_gpu_preflight": "results/task5_subtask2/task_five_day_gpu_preflight.json",
   "five_day_gpu_search": "results/task5_subtask2/task_five_day_gpu_searched_parameters.json",
   "five_day_gpu_posterior": "results/task5_subtask2/task_five_day_gpu_eryn_posterior_summary.csv",
-  "gpu_comparison_table": "results/task5_subtask2/baseline_vs_five_day_gpu_eryn_parameter_summary.csv"
+  "gpu_comparison_table": "results/task5_subtask2/baseline_vs_five_day_gpu_eryn_parameter_summary.csv",
+  "baseline_gpu_reflected_search": "results/task5_subtask2/baseline_example4_gpu_searched_parameters_reflected.json",
+  "five_day_gpu_reflected_search": "results/task5_subtask2/task_five_day_gpu_searched_parameters_reflected.json"
 }
