@@ -149,10 +149,12 @@ Example 4 data loading / A,E construction / FFT / PSD / covariance / windows
 
 The CPU Bilby/NESSAI path is retained in the notebook as a reference fallback, but it is not the default route because the local run is much slower. The previous CPU NESSAI attempt ran for about 4 hours and still had `dlogZ ~ 1497`, far from the `stopping=0.1` target. The current route keeps NESSAI but exposes `Triangle_BBH.Fisher.Likelihood.het_log_like_vectorized` through a custom `nessai.model.Model`, so NESSAI can evaluate batches of live points with the GPU heterodyned likelihood. This should be substantially faster than Example 4's full-frequency CPU likelihood if the benchmark cell confirms high batch throughput.
 
-Two guardrails are built into the notebook before production sampling:
+Four guardrails are built into the notebook before production sampling and interpretation:
 
 - Coordinate check: `*_gpu_nessai_coordinate_check.json` compares the likelihood from Triangle-BBH internal `ParamDict2ParamArr` coordinates against an intentionally wrong raw physical-coordinate call. Production runs should proceed only if the internal-coordinate likelihood is the self-consistent branch and the round-trip error is negligible.
 - Sky-prior mode: `GPU_NESSAI_SKY_PRIOR_MODE = "local_fisher"` is the default because the heterodyned likelihood is built around one fiducial waveform. `wide_sky` is available only as an exploratory stress test; for a rigorous direct-vs-reflected comparison, run two local branches with separate fiducial/search points and compare their `logZ`.
+- NESSAI insertion-index diagnostic: `*_gpu_nessai_diagnostics.json` records whether insertion indices are consistent with a uniform distribution. A low KS p-value is evidence that the sampler may be over- or under-constraining the live-point contour.
+- Fisher-box boundary diagnostic: `*_gpu_nessai_boundary_check.csv` records the posterior fraction near each prior bound. If posterior mass touches a bound in the full run, widen/recenter that parameter before interpreting credible intervals.
 
 Current subtask 2 outputs:
 
@@ -177,12 +179,12 @@ Current quantitative summaries:
 - [Baseline GPU preflight](results/task5_subtask2/baseline_example4_gpu_preflight.json)
 - [Baseline GPU search vs injection](results/task5_subtask2/baseline_example4_gpu_search_vs_injection.csv)
 - [Baseline GPU reflected search parameters](results/task5_subtask2/baseline_example4_gpu_searched_parameters_reflected.json)
-- Baseline GPU NESSAI outputs: `baseline_example4_gpu_nessai_*` under `results/task5_subtask2/` after running notebook section 18b.
+- Baseline GPU NESSAI outputs: `baseline_example4_gpu_nessai_*` under `results/task5_subtask2/` after running notebook section 18b, including posterior, evidence, insertion-index diagnostics, and boundary checks.
 - [Baseline GPU Eryn posterior summary](results/task5_subtask2/baseline_example4_gpu_eryn_posterior_summary.csv)
 - [Task 5-day GPU preflight](results/task5_subtask2/task_five_day_gpu_preflight.json)
 - [Task 5-day GPU search vs injection](results/task5_subtask2/task_five_day_gpu_search_vs_injection.csv)
 - [Task 5-day GPU reflected search parameters](results/task5_subtask2/task_five_day_gpu_searched_parameters_reflected.json)
-- Task 5-day GPU NESSAI outputs: `task_five_day_gpu_nessai_*` under `results/task5_subtask2/` after running notebook section 19.
+- Task 5-day GPU NESSAI outputs: `task_five_day_gpu_nessai_*` under `results/task5_subtask2/` after running notebook section 19, including posterior, evidence, insertion-index diagnostics, and boundary checks.
 - [Task 5-day GPU Eryn posterior summary](results/task5_subtask2/task_five_day_gpu_eryn_posterior_summary.csv)
 - [Baseline vs 5-day GPU Eryn comparison](results/task5_subtask2/baseline_vs_five_day_gpu_eryn_parameter_summary.csv)
 
@@ -194,9 +196,9 @@ The 100-iteration validation F-statistics search recovers the intrinsic paramete
 
 The GPU preflight JSON files now include `log_likelihood_at_injection` / `heterodyned_log_likelihood_at_injection`, computed with the same heterodyned likelihood object used by the GPU NESSAI route. These fields are intended as a sanity check that the likelihood can be evaluated at the injected parameters before long sampling starts.
 
-The previous Windows-local posterior run used `bilby==1.0.0` with `dynesty==1.0.1` as a smoke sampler. Those CSV files are kept only as historical pipeline-validation outputs. The previous WSL2 GPU Eryn quick check is also retained only as a pipeline-validation posterior. The production route is now NESSAI with `GPU_NESSAI_RUN_MODE = "pilot"` for a small validation run and `GPU_NESSAI_RUN_MODE = "full"` for the evidence-producing run. The local benchmark currently evaluates `het_log_like_vectorized(4000)` in about `0.28 s`, i.e. roughly `1.3e4-1.4e4` likelihood points/s before NESSAI flow-training overhead. The NESSAI benchmark JSON files should still be checked first; if batch likelihood throughput is poor, reduce `likelihood_chunksize` from `512` to `256`.
+The previous Windows-local posterior run used `bilby==1.0.0` with `dynesty==1.0.1` as a smoke sampler. Those CSV files are kept only as historical pipeline-validation outputs. The previous WSL2 GPU Eryn quick check is also retained only as a pipeline-validation posterior. The production route is now NESSAI with `GPU_NESSAI_RUN_MODE = "pilot"` for a small validation run and `GPU_NESSAI_RUN_MODE = "full"` for the evidence-producing run. The NESSAI paper finds that gravitational-wave inference needs at least about 1000 live points and recommends 2000 for complex GW problems, so the `nlive=200` pilot must only be used to check the coordinate path, benchmark, and file outputs; scientific evidence and posterior statements should use `GPU_NESSAI_FULL_NLIVE = 2000`. The local benchmark currently evaluates `het_log_like_vectorized(4000)` in about `0.28 s`, i.e. roughly `1.3e4-1.4e4` likelihood points/s before NESSAI flow-training and pool-population overhead. The NESSAI benchmark JSON files should still be checked first; if batch likelihood throughput is poor, reduce `likelihood_chunksize` from `512` to `256`.
 
-Because the current production route uses NESSAI nested sampling, it is expected to provide Bayesian evidence (`log Z`) and posterior samples for comparing the symmetric baseline and asymmetric 5-day windows. After the full run, Section 21 of the notebook should discuss NESSAI convergence/evidence uncertainty, direct/reflected-sky degeneracy, and possible PSD-estimation differences between the two windows before reporting final posterior conclusions.
+Because the current production route uses NESSAI nested sampling, it is expected to provide Bayesian evidence (`log Z`) and posterior samples for comparing the symmetric baseline and asymmetric 5-day windows. After the full run, Section 21 of the notebook should discuss NESSAI convergence/evidence uncertainty, insertion-index uniformity, posterior boundary contact, direct/reflected-sky degeneracy, and possible PSD-estimation differences between the two windows before reporting final posterior conclusions.
 
 ## Environment
 
@@ -243,18 +245,20 @@ Triangle-BBH and Triangle-Simulator may require a separate Linux or WSL2 environ
 3. The notebook default main route now runs GPU preflight, GPU F-statistics search, GPU Fisher analysis, and vectorised GPU-heterodyned NESSAI for both the baseline and task 5-day windows.
 4. Keep `RUN_CPU_EXAMPLE4_FSTAT = False` and `RUN_CPU_NESSAI = False` unless you explicitly want the slower CPU reference route.
 5. Use `GPU_NESSAI_RUN_MODE = "pilot"` with `GPU_NESSAI_PILOT_NLIVE = 200` to validate the route quickly; switch to `GPU_NESSAI_RUN_MODE = "full"` with `GPU_NESSAI_FULL_NLIVE = 2000` for the evidence-producing run.
-6. Before the long run, check `python scripts/gpu_nessai_vectorized_interface_check.py`, the notebook-generated `*_gpu_nessai_coordinate_check.json`, and the `*_gpu_nessai_vectorized_benchmark.json` files.
-7. For lower-level timing diagnostics only, run `python scripts/gpu_subtask2_benchmark.py`.
+6. When switching from pilot to full, either clear the corresponding `results/task5_subtask2/*_gpu_nessai/` output directory or set `GPU_NESSAI_RESUME = False` for the first full run, then re-enable resume only for interrupted full runs.
+7. Before the long run, check `python scripts/gpu_nessai_vectorized_interface_check.py`, the notebook-generated `*_gpu_nessai_coordinate_check.json`, and the `*_gpu_nessai_vectorized_benchmark.json` files.
+8. After the full run, inspect `*_gpu_nessai_diagnostics.json` and `*_gpu_nessai_boundary_check.csv` before interpreting `logZ`, CI widths, or baseline-vs-5-day differences.
+9. For lower-level timing diagnostics only, run `python scripts/gpu_subtask2_benchmark.py`.
 
 ## Remaining Work
 
-Subtask 2 is implemented with the GPU-heterodyned NESSAI route. The remaining production step is to run the notebook in `GPU_NESSAI_RUN_MODE = "pilot"` first, inspect the vectorised likelihood benchmark and posterior sanity checks, then run `GPU_NESSAI_RUN_MODE = "full"` for both windows before treating evidence and posterior summaries as final.
+Subtask 2 is implemented with the GPU-heterodyned NESSAI route. The remaining production step is to run the notebook in `GPU_NESSAI_RUN_MODE = "pilot"` first, inspect the vectorised likelihood benchmark, coordinate checks, and file outputs, then run `GPU_NESSAI_RUN_MODE = "full"` for both windows. Evidence and posterior summaries should be treated as final only after insertion-index and boundary diagnostics pass.
 
 Preliminary runtime estimate on the current WSL2 GPU setup:
 
-- Cached-search pilot run (`nlive=200`, one window): about `10-30 min`, mostly NESSAI setup/training overhead rather than raw likelihood time.
-- Cached-search full run (`nlive=2000`, one local-fisher window): plausibly `40-90 min` if vectorised throughput remains near the current benchmark and proposal efficiency is reasonable.
-- Two windows full run: roughly `1.5-3 h`.
+- Cached-search pilot run (`nlive=200`, one window): about `10-30 min`, mostly NESSAI setup/training overhead rather than raw likelihood time; this is a pipeline check only.
+- Cached-search full run (`nlive=2000`, one local-fisher window): plausibly `40-90 min` if vectorised throughput remains near the current benchmark and proposal efficiency is reasonable. If NESSAI flow training/pool population dominates, this may stretch toward `1-2 h`.
+- Two windows full run: roughly `1.5-3 h`, with a cautious upper bound around `4 h` if flow-training efficiency is poor.
 - Re-running the full GPU F-statistics search instead of using cached search results can add tens of minutes per window, depending on `GPU_SEARCH_MAXITER`.
 - `wide_sky` can be substantially slower and less reliable with a single heterodyned fiducial; prefer two separate local-fisher branches for direct/reflected mode comparison.
 
