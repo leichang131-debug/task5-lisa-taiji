@@ -31,9 +31,11 @@ cells = [
 This notebook implements UCAS 2026 Task 5 subtask 2 by migrating the official
 Triangle-BBH Example 4 workflow into this repository and then adding the required
 asymmetric 5-day window experiment. The main execution route keeps Example 4's
-TDC data handling, FFT, PSD, covariance, and window comparison, but replaces the
-slow CPU nested-sampling stage with the official GPU route: Example 5's BBHx
-GPU F-statistics search followed by Example 2's GPU heterodyned Eryn sampler.
+TDC data handling, FFT, PSD, covariance, window comparison, and NESSAI nested
+sampling requirement. The speed-critical change is to replace Example 4's slow
+full-frequency CPU likelihood with the GPU BBHx heterodyned likelihood used by
+the official GPU examples, exposed to NESSAI through a vectorised
+`nessai.model.Model`.
 
 Baseline source: `external/Triangle-BBH/Examples/4_TDC_Verification_MBHB_Search_and_Estimation(CPU).ipynb`.
 GPU references:
@@ -51,8 +53,8 @@ Implemented requirements:
 5. Save figures and summaries under `figures/task5_subtask2/` and `results/task5_subtask2/`.
 
 Heavy search and sampling cells are controlled by runtime switches. The default
-main route is the official GPU route; the CPU/Bilby/NESSAI route is retained as
-a reference fallback.
+main route is GPU-heterodyned NESSAI; CPU/Bilby/NESSAI and GPU Eryn are retained
+as reference fallbacks.
 """
     ),
     md(
@@ -64,7 +66,7 @@ a reference fallback.
 - [ ] Convert XYZ to A/E/T and keep A/E channels with the official sign convention.
 - [ ] Build official baseline window: `tc - 2.5 days` to `tc + 2.5 days`.
 - [ ] Reproduce Example 4 FFT, PSD, frequency cut, covariance, and model setup.
-- [ ] Run official GPU BBHx F-statistics search, Fisher analysis, and heterodyned Eryn sampler for the baseline window.
+- [ ] Run official GPU BBHx F-statistics search, Fisher analysis, and vectorised GPU-heterodyned NESSAI for the baseline window.
 - [ ] Build task-required window: `tc - 4 days` to `tc + 1 day`.
 - [ ] Rebuild time-domain data, FFT, PSD, covariance, GPU waveform response, likelihood, and sampler for the modified window.
 - [ ] Compare posterior medians and 90% credible intervals.
@@ -148,7 +150,8 @@ USE_GPU_BBHX = True
 RUN_GPU_PREFLIGHT = True
 RUN_GPU_FSTAT_SEARCH = True
 RUN_GPU_FISHER = True
-RUN_GPU_ERYN_SAMPLER = True
+RUN_GPU_NESSAI_SAMPLER = True
+RUN_GPU_ERYN_SAMPLER = False
 
 FMIN = 0.5e-4
 FMAX = 1e-2
@@ -160,6 +163,15 @@ SMOKE_TEST_SAMPLER_SETTINGS = dict(sampler="dynesty", nlive=80, dlogz=10.0, maxc
 SAMPLER_POOL = 1 if os.name == "nt" else os.cpu_count()
 
 GPU_SEARCH_MAXITER = OFFICIAL_SEARCH_MAXITER
+GPU_NESSAI_RUN_MODE = "pilot"
+GPU_NESSAI_PILOT_NLIVE = 200
+GPU_NESSAI_FULL_NLIVE = 2000
+GPU_NESSAI_NLIVE = GPU_NESSAI_PILOT_NLIVE if GPU_NESSAI_RUN_MODE == "pilot" else GPU_NESSAI_FULL_NLIVE
+GPU_NESSAI_STOPPING = 0.1
+GPU_NESSAI_LIKELIHOOD_CHUNKSIZE = 512
+GPU_NESSAI_PRIOR_SIGMA = 8.0
+GPU_NESSAI_SEED = 1234
+RUN_GPU_NESSAI_BENCHMARK = True
 GPU_ERYN_RUN_MODE = "quick_check"
 GPU_ERYN_FULL_NWALKERS = 400
 GPU_ERYN_FULL_NTEMPS = 10
@@ -850,12 +862,16 @@ manifest = {
     "baseline_gpu_preflight": "results/task5_subtask2/baseline_example4_gpu_preflight.json",
     "baseline_gpu_search": "results/task5_subtask2/baseline_example4_gpu_searched_parameters.json",
     "baseline_gpu_reflected_search": "results/task5_subtask2/baseline_example4_gpu_searched_parameters_reflected.json",
-    "baseline_gpu_posterior": "results/task5_subtask2/baseline_example4_gpu_eryn_posterior_summary.csv",
+    "baseline_gpu_nessai_posterior": "results/task5_subtask2/baseline_example4_gpu_nessai_posterior_summary.csv",
+    "baseline_gpu_nessai_evidence": "results/task5_subtask2/baseline_example4_gpu_nessai_evidence.json",
+    "baseline_gpu_eryn_posterior": "results/task5_subtask2/baseline_example4_gpu_eryn_posterior_summary.csv",
     "five_day_gpu_preflight": "results/task5_subtask2/task_five_day_gpu_preflight.json",
     "five_day_gpu_search": "results/task5_subtask2/task_five_day_gpu_searched_parameters.json",
     "five_day_gpu_reflected_search": "results/task5_subtask2/task_five_day_gpu_searched_parameters_reflected.json",
-    "five_day_gpu_posterior": "results/task5_subtask2/task_five_day_gpu_eryn_posterior_summary.csv",
-    "gpu_comparison_table": "results/task5_subtask2/baseline_vs_five_day_gpu_eryn_parameter_summary.csv",
+    "five_day_gpu_nessai_posterior": "results/task5_subtask2/task_five_day_gpu_nessai_posterior_summary.csv",
+    "five_day_gpu_nessai_evidence": "results/task5_subtask2/task_five_day_gpu_nessai_evidence.json",
+    "five_day_gpu_eryn_posterior": "results/task5_subtask2/task_five_day_gpu_eryn_posterior_summary.csv",
+    "gpu_comparison_table": "results/task5_subtask2/baseline_vs_five_day_gpu_nessai_parameter_summary.csv",
 }
 save_json(manifest, "manifest.json")
 print(json.dumps(manifest, indent=2, ensure_ascii=False))
@@ -863,13 +879,13 @@ print(json.dumps(manifest, indent=2, ensure_ascii=False))
     ),
     md(
         """
-## 18. Official GPU Route: BBHx, GPU F-statistics, and Eryn
+## 18. Official GPU Route: BBHx, GPU F-statistics, and NESSAI
 
 The official Triangle-BBH GPU notebooks use `BBHxWaveformGenerator` and
-`BBHxFDTDIResponseGenerator` with `use_gpu=True`. Their sampling path is Eryn
-parallel-tempered MCMC, not Bilby/NESSAI. This section therefore keeps the
-previous NESSAI route intact and adds the GPU route as a separate, reproducible
-path.
+`BBHxFDTDIResponseGenerator` with `use_gpu=True`. This notebook keeps the task's
+NESSAI requirement by wrapping the GPU heterodyned likelihood in a vectorised
+`nessai.model.Model`. The Eryn route is retained only as a fallback and
+pipeline cross-check.
 """
     ),
     code(
@@ -1142,9 +1158,90 @@ else:
     print("GPU Fisher code is present but not executed.")
 """
     ),
+    md(
+        """
+## 18b. Main Sampler: Vectorised GPU-Heterodyned NESSAI
+
+This is the primary sampling route for the task requirement. It keeps NESSAI as
+the nested sampler, but avoids Example 4's slow full-frequency CPU likelihood.
+The NESSAI model evaluates batches of live points with
+`Likelihood.het_log_like_vectorized`, the same GPU heterodyned likelihood used
+by the Triangle-BBH GPU examples. This follows the acceleration logic discussed
+in the Taiji Data Challenge context: data handling, TDI response, and Bayesian
+inference stay aligned with the official workflow, while the expensive likelihood
+evaluation is reduced to a heterodyned calculation around the F-statistics
+solution.
+
+Important runtime expectation: this can only be fast if NESSAI calls the
+likelihood in vectorised batches. The benchmark cell below checks that one batch
+of points is evaluated through `het_log_like_vectorized` before the long run.
+"""
+    ),
     code(
         r"""
-def build_gpu_eryn_likelihood(gpu_search: dict) -> Likelihood:
+GPU_NESSAI_INTERNAL_PARAM_NAMES = [
+    "log_chirp_mass",
+    "mass_ratio",
+    "spin_1z",
+    "spin_2z",
+    "coalescence_time",
+    "coalescence_phase",
+    "log_luminosity_distance",
+    "cos_inclination",
+    "longitude",
+    "sin_latitude",
+    "psi",
+]
+
+from nessai.model import Model
+try:
+    import cupy as cp
+except ImportError:
+    cp = None
+
+GPU_NESSAI_PHYSICAL_PARAM_NAMES = [
+    "chirp_mass",
+    "mass_ratio",
+    "spin_1z",
+    "spin_2z",
+    "coalescence_time",
+    "coalescence_phase",
+    "luminosity_distance",
+    "inclination",
+    "longitude",
+    "latitude",
+    "psi",
+]
+
+GPU_NESSAI_FALLBACK_HALF_WIDTHS = {
+    "chirp_mass": 5e4,
+    "mass_ratio": 0.08,
+    "spin_1z": 0.4,
+    "spin_2z": 0.4,
+    "coalescence_time": 600 / DAY,
+    "coalescence_phase": PI,
+    "luminosity_distance": 2e4,
+    "inclination": 0.8,
+    "longitude": PI,
+    "latitude": 0.8,
+    "psi": PI / 2,
+}
+
+GPU_NESSAI_PHYSICAL_LIMITS = {
+    "chirp_mass": (1e5, 1e8),
+    "mass_ratio": (0.01, 0.99),
+    "spin_1z": (-0.99, 0.99),
+    "spin_2z": (-0.99, 0.99),
+    "coalescence_time": (0.0, 40.0),
+    "coalescence_phase": (0.0, TWOPI),
+    "luminosity_distance": (1e3, 2e5),
+    "inclination": (0.0, PI),
+    "longitude": (0.0, TWOPI),
+    "latitude": (-PI / 2, PI / 2),
+    "psi": (0.0, PI),
+}
+
+def build_gpu_heterodyned_likelihood(gpu_search: dict) -> Likelihood:
     Like_gpu = Likelihood(
         response_generator=FDTDI_GPU,
         frequency=gpu_search["gpu_window"]["frequency"],
@@ -1155,6 +1252,177 @@ def build_gpu_eryn_likelihood(gpu_search: dict) -> Likelihood:
     )
     Like_gpu.prepare_het_log_like(base_parameters=ParamDict2ParamArr(gpu_search["searched_parameters"]))
     return Like_gpu
+
+def build_gpu_nessai_bounds(gpu_search: dict, FIM=None, nsigma: float = GPU_NESSAI_PRIOR_SIGMA) -> tuple[dict, dict]:
+    # Build Fisher-centred physical bounds and convert them to Triangle-BBH array coordinates.
+    search = dict(gpu_search["searched_parameters"])
+    errors = getattr(FIM, "param_errors", {}) if FIM is not None else {}
+    lower_phys = {}
+    upper_phys = {}
+    for name in GPU_NESSAI_PHYSICAL_PARAM_NAMES:
+        center = float(search[name])
+        sigma = float(errors.get(name, np.nan)) if errors is not None else np.nan
+        half_width = nsigma * sigma if np.isfinite(sigma) and sigma > 0 else GPU_NESSAI_FALLBACK_HALF_WIDTHS[name]
+        lo, hi = center - half_width, center + half_width
+        hard_lo, hard_hi = GPU_NESSAI_PHYSICAL_LIMITS[name]
+        lower_phys[name] = float(max(hard_lo, lo))
+        upper_phys[name] = float(min(hard_hi, hi))
+        if lower_phys[name] >= upper_phys[name]:
+            fallback = GPU_NESSAI_FALLBACK_HALF_WIDTHS[name]
+            lower_phys[name] = float(max(hard_lo, center - fallback))
+            upper_phys[name] = float(min(hard_hi, center + fallback))
+    lo_arr = np.array(ParamDict2ParamArr(lower_phys), dtype=float)
+    hi_arr = np.array(ParamDict2ParamArr(upper_phys), dtype=float)
+    bounds = {}
+    for i, name in enumerate(GPU_NESSAI_INTERNAL_PARAM_NAMES):
+        lo, hi = sorted([float(lo_arr[i]), float(hi_arr[i])])
+        if np.isclose(lo, hi):
+            lo -= 1e-8
+            hi += 1e-8
+        bounds[name] = [lo, hi]
+    return bounds, {"lower": lower_phys, "upper": upper_phys}
+
+class TaijiGPUHeterodynedNESSAIModel(Model):
+    # NESSAI model backed by Triangle-BBH GPU heterodyned vectorised likelihood.
+
+    def __init__(self, param_names: list[str], bounds: dict, like_gpu, likelihood_chunksize: int | None = None):
+        self.names = list(param_names)
+        self.bounds = bounds
+        self._like_gpu = like_gpu
+        self.allow_vectorised = True
+        self.vectorised_likelihood = True
+        self.likelihood_chunksize = likelihood_chunksize
+
+    def log_prior(self, x):
+        log_p = np.full(x.size, -np.inf)
+        in_bounds = self.in_bounds(x)
+        width_log_norm = 0.0
+        for name in self.names:
+            width_log_norm += np.log(self.bounds[name][1] - self.bounds[name][0])
+        log_p[in_bounds] = -width_log_norm
+        return log_p
+
+    def log_likelihood(self, x):
+        params = np.vstack([np.atleast_1d(x[name]).astype(float) for name in self.names])
+        ll = self._like_gpu.het_log_like_vectorized(params)
+        if cp is not None and isinstance(ll, cp.ndarray):
+            ll = cp.asnumpy(ll)
+        ll = np.asarray(ll, dtype=float).reshape(-1)
+        return ll if x.size > 1 else float(ll[0])
+
+def structured_samples_to_physical_dataframe(samples) -> pd.DataFrame:
+    rows = []
+    for row in samples:
+        arr = np.array([row[name] for name in GPU_NESSAI_INTERNAL_PARAM_NAMES], dtype=float)
+        rows.append(ParamArr2ParamDict(arr))
+    return pd.DataFrame(rows)
+
+def benchmark_gpu_nessai_likelihood(model: TaijiGPUHeterodynedNESSAIModel, label: str, n: int = 2048) -> dict:
+    import time
+    points = model.new_point(N=n)
+    t0 = time.time()
+    ll = model.log_likelihood(points)
+    elapsed = time.time() - t0
+    report = {
+        "label": label,
+        "batch_size": int(n),
+        "elapsed_seconds": float(elapsed),
+        "points_per_second": float(n / elapsed) if elapsed > 0 else np.inf,
+        "finite_fraction": float(np.mean(np.isfinite(ll))),
+        "vectorised_likelihood": bool(model.vectorised_likelihood),
+        "likelihood_chunksize": model.likelihood_chunksize,
+    }
+    save_json(report, f"{label}_gpu_nessai_vectorized_benchmark.json")
+    print(json.dumps(report, indent=2))
+    return report
+
+def extract_nessai_result(fs) -> dict:
+    result = getattr(fs, "result", None)
+    nested_sampler = getattr(fs, "nested_sampler", None)
+    log_evidence = getattr(result, "log_evidence", None)
+    log_evidence_error = getattr(result, "log_evidence_error", None)
+    posterior = getattr(result, "posterior_samples", None)
+    if posterior is None:
+        posterior = getattr(fs, "posterior_samples", None)
+    if posterior is None and nested_sampler is not None:
+        posterior = getattr(nested_sampler, "posterior_samples", None)
+    if log_evidence is None and nested_sampler is not None:
+        log_evidence = getattr(nested_sampler, "log_evidence", None)
+    if log_evidence_error is None and nested_sampler is not None:
+        log_evidence_error = getattr(nested_sampler, "log_evidence_error", None)
+    return {"result": result, "posterior": posterior, "log_evidence": log_evidence, "log_evidence_error": log_evidence_error}
+
+def run_gpu_nessai_sampler(gpu_search: dict, FIM, label: str):
+    from nessai.flowsampler import FlowSampler
+    bounds, physical_bounds = build_gpu_nessai_bounds(gpu_search, FIM)
+    like_gpu = build_gpu_heterodyned_likelihood(gpu_search)
+    model = TaijiGPUHeterodynedNESSAIModel(
+        GPU_NESSAI_INTERNAL_PARAM_NAMES,
+        bounds,
+        like_gpu,
+        likelihood_chunksize=GPU_NESSAI_LIKELIHOOD_CHUNKSIZE,
+    )
+    save_json({"internal_bounds": bounds, "physical_bounds": physical_bounds}, f"{label}_gpu_nessai_bounds.json")
+    output = RESULT_DIR / f"{label}_gpu_nessai"
+    fs = FlowSampler(
+        model,
+        output=str(output),
+        nlive=GPU_NESSAI_NLIVE,
+        stopping=GPU_NESSAI_STOPPING,
+        seed=GPU_NESSAI_SEED,
+        resume=True,
+        likelihood_chunksize=GPU_NESSAI_LIKELIHOOD_CHUNKSIZE,
+        pytorch_threads=1,
+    )
+    if RUN_GPU_NESSAI_BENCHMARK:
+        benchmark_gpu_nessai_likelihood(model, label)
+    save_json(
+        {
+            "run_mode": GPU_NESSAI_RUN_MODE,
+            "nlive": GPU_NESSAI_NLIVE,
+            "full_nlive": GPU_NESSAI_FULL_NLIVE,
+            "pilot_nlive": GPU_NESSAI_PILOT_NLIVE,
+            "stopping": GPU_NESSAI_STOPPING,
+            "seed": GPU_NESSAI_SEED,
+            "likelihood_chunksize": GPU_NESSAI_LIKELIHOOD_CHUNKSIZE,
+            "sampler": "nessai.FlowSampler",
+            "likelihood": "Triangle_BBH GPU heterodyned het_log_like_vectorized",
+        },
+        f"{label}_gpu_nessai_run_config.json",
+    )
+    fs.run(plot=False, save=True)
+    extracted = extract_nessai_result(fs)
+    posterior = extracted["posterior"]
+    if posterior is None:
+        raise RuntimeError("NESSAI finished but posterior samples were not found on the FlowSampler/result object.")
+    posterior_df = structured_samples_to_physical_dataframe(posterior)
+    posterior_df.to_csv(RESULT_DIR / f"{label}_gpu_nessai_posterior_samples.csv", index=False)
+    summary = posterior_summary(posterior_df, GPU_NESSAI_PHYSICAL_PARAM_NAMES)
+    summary.to_csv(RESULT_DIR / f"{label}_gpu_nessai_posterior_summary.csv", index=False)
+    save_json(
+        {
+            "label": label,
+            "log_evidence": None if extracted["log_evidence"] is None else float(extracted["log_evidence"]),
+            "log_evidence_error": None if extracted["log_evidence_error"] is None else float(extracted["log_evidence_error"]),
+            "posterior_samples": int(len(posterior_df)),
+        },
+        f"{label}_gpu_nessai_evidence.json",
+    )
+    return fs, summary
+
+baseline_gpu_nessai_sampler = None
+baseline_gpu_summary = None
+if RUN_GPU_NESSAI_SAMPLER and baseline_gpu_search is not None and baseline_gpu_FIM is not None:
+    baseline_gpu_nessai_sampler, baseline_gpu_summary = run_gpu_nessai_sampler(baseline_gpu_search, baseline_gpu_FIM, "baseline_example4")
+    display(baseline_gpu_summary)
+else:
+    print("GPU heterodyned NESSAI code is present but not executed.")
+"""
+    ),
+    code(
+        r"""
+def build_gpu_eryn_likelihood(gpu_search: dict) -> Likelihood:
+    return build_gpu_heterodyned_likelihood(gpu_search)
 
 def run_gpu_eryn_sampler(gpu_search: dict, label: str):
     from eryn.ensemble import EnsembleSampler
@@ -1216,11 +1484,13 @@ def summarize_gpu_eryn_chain(ensemble, label: str) -> pd.DataFrame:
     return summary
 
 baseline_gpu_ensemble = None
-baseline_gpu_summary = None
+baseline_gpu_eryn_summary = None
 if RUN_GPU_ERYN_SAMPLER and baseline_gpu_search is not None:
     baseline_gpu_ensemble, baseline_gpu_out = run_gpu_eryn_sampler(baseline_gpu_search, label="baseline_example4")
-    baseline_gpu_summary = summarize_gpu_eryn_chain(baseline_gpu_ensemble, label="baseline_example4")
-    display(baseline_gpu_summary)
+    baseline_gpu_eryn_summary = summarize_gpu_eryn_chain(baseline_gpu_ensemble, label="baseline_example4")
+    if baseline_gpu_summary is None:
+        baseline_gpu_summary = baseline_gpu_eryn_summary
+    display(baseline_gpu_eryn_summary)
 else:
     print("GPU Eryn sampler code is present but not executed.")
 """
@@ -1251,12 +1521,22 @@ if RUN_GPU_FISHER and five_day_gpu_search is not None:
 else:
     print("5-day GPU Fisher code is present but not executed.")
 
-five_day_gpu_ensemble = None
+five_day_gpu_nessai_sampler = None
 five_day_gpu_summary = None
+if RUN_GPU_NESSAI_SAMPLER and five_day_gpu_search is not None and five_day_gpu_FIM is not None:
+    five_day_gpu_nessai_sampler, five_day_gpu_summary = run_gpu_nessai_sampler(five_day_gpu_search, five_day_gpu_FIM, "task_five_day")
+    display(five_day_gpu_summary)
+else:
+    print("5-day GPU heterodyned NESSAI code is present but not executed.")
+
+five_day_gpu_ensemble = None
+five_day_gpu_eryn_summary = None
 if RUN_GPU_ERYN_SAMPLER and five_day_gpu_search is not None:
     five_day_gpu_ensemble, five_day_gpu_out = run_gpu_eryn_sampler(five_day_gpu_search, label="task_five_day")
-    five_day_gpu_summary = summarize_gpu_eryn_chain(five_day_gpu_ensemble, label="task_five_day")
-    display(five_day_gpu_summary)
+    five_day_gpu_eryn_summary = summarize_gpu_eryn_chain(five_day_gpu_ensemble, label="task_five_day")
+    if five_day_gpu_summary is None:
+        five_day_gpu_summary = five_day_gpu_eryn_summary
+    display(five_day_gpu_eryn_summary)
 else:
     print("5-day GPU Eryn sampler code is present but not executed.")
 """
@@ -1267,7 +1547,7 @@ else:
 gpu_comparison = pd.DataFrame(columns=["parameter", "baseline_median", "baseline_ci90_low", "baseline_ci90_high", "baseline_ci90_width", "five_day_median", "five_day_ci90_low", "five_day_ci90_high", "five_day_ci90_width", "ci90_width_ratio_5day_over_baseline"])
 if baseline_gpu_summary is not None and five_day_gpu_summary is not None:
     gpu_comparison = compare_summaries(baseline_gpu_summary, five_day_gpu_summary)
-    gpu_comparison.to_csv(RESULT_DIR / "baseline_vs_five_day_gpu_eryn_parameter_summary.csv", index=False)
+    gpu_comparison.to_csv(RESULT_DIR / "baseline_vs_five_day_gpu_nessai_parameter_summary.csv", index=False)
 display(gpu_comparison)
 """
     ),
@@ -1282,15 +1562,15 @@ Report these points in the README:
 1. Whether official Example 4 data handling and window construction were reproduced.
 2. Baseline window: `tc - 2.5 days` to `tc + 2.5 days`.
 3. Modified task window: `tc - 4 days` to `tc + 1 day`.
-4. Whether the official GPU route changes search parameters, reconstruction residuals, Fisher estimates, or posterior credible intervals.
+4. Whether the GPU-heterodyned NESSAI route changes search parameters, reconstruction residuals, Fisher estimates, evidence, or posterior credible intervals.
 5. Which parameters improve most and which remain degenerate or multimodal.
-6. Limitations: Eryn posterior sampling does not report NESSAI evidence/logZ, possible multimodality, and local GPU memory constraints.
+6. Limitations: possible multimodality, direct/reflected sky degeneracy, local GPU memory constraints, and the dependence of speed-up on vectorised likelihood batch throughput.
 
 Conclusion draft:
 
-- Baseline GPU run: TODO after GPU search and Eryn sampler finish.
-- Modified 5-day GPU run: TODO after GPU search and Eryn sampler finish.
-- Quantitative posterior comparison: TODO after both GPU posterior summaries are generated.
+- Baseline GPU NESSAI run: TODO after NESSAI finishes.
+- Modified 5-day GPU NESSAI run: TODO after NESSAI finishes.
+- Quantitative posterior/evidence comparison: TODO after both GPU NESSAI summaries are generated.
 """
     ),
 ]

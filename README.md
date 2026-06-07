@@ -128,8 +128,8 @@ Main goals:
 2. Reproduce Example 4 data handling as the baseline result.
 3. Understand TDI data, Fourier transform, massive black-hole binary waveform, and Bayesian inference.
 4. Extend the parameter-estimation data window to 5 days: 4 days before `coalescence_time` and 1 day after it.
-5. Replace the slow CPU nested-sampling stage with the official GPU route: Example 5 GPU F-statistics search plus Example 2 GPU heterodyned Eryn sampling.
-6. Save corner plots, trace plots, and parameter comparison tables under `figures/task5_subtask2/`.
+5. Keep the required NESSAI nested-sampling stage, but accelerate it with the GPU BBHx heterodyned likelihood used by the official GPU examples.
+6. Save evidence summaries, posterior tables, corner plots, trace/diagnostic plots, and parameter comparison tables under `figures/task5_subtask2/` and `results/task5_subtask2/`.
 
 Official Example 4 data files:
 
@@ -143,10 +143,11 @@ Current main route:
 ```text
 Example 4 data loading / A,E construction / FFT / PSD / covariance / windows
 + Example 5 BBHx GPU F-statistics search
-+ Example 2 GPU heterodyned Eryn posterior sampling
++ Example 2-style GPU heterodyned likelihood
++ vectorised nessai.FlowSampler nested sampling
 ```
 
-The CPU Bilby/NESSAI path is retained in the notebook as a reference fallback, but it is not the default route because the local run is much slower. The previous CPU NESSAI attempt ran for about 4 hours and still had `dlogZ ~ 1497`, far from the `stopping=0.1` target.
+The CPU Bilby/NESSAI path is retained in the notebook as a reference fallback, but it is not the default route because the local run is much slower. The previous CPU NESSAI attempt ran for about 4 hours and still had `dlogZ ~ 1497`, far from the `stopping=0.1` target. The current route keeps NESSAI but exposes `Triangle_BBH.Fisher.Likelihood.het_log_like_vectorized` through a custom `nessai.model.Model`, so NESSAI can evaluate batches of live points with the GPU heterodyned likelihood. This should be substantially faster than Example 4's full-frequency CPU likelihood if the benchmark cell confirms high batch throughput.
 
 Current subtask 2 outputs:
 
@@ -171,10 +172,12 @@ Current quantitative summaries:
 - [Baseline GPU preflight](results/task5_subtask2/baseline_example4_gpu_preflight.json)
 - [Baseline GPU search vs injection](results/task5_subtask2/baseline_example4_gpu_search_vs_injection.csv)
 - [Baseline GPU reflected search parameters](results/task5_subtask2/baseline_example4_gpu_searched_parameters_reflected.json)
+- Baseline GPU NESSAI outputs: `baseline_example4_gpu_nessai_*` under `results/task5_subtask2/` after running notebook section 18b.
 - [Baseline GPU Eryn posterior summary](results/task5_subtask2/baseline_example4_gpu_eryn_posterior_summary.csv)
 - [Task 5-day GPU preflight](results/task5_subtask2/task_five_day_gpu_preflight.json)
 - [Task 5-day GPU search vs injection](results/task5_subtask2/task_five_day_gpu_search_vs_injection.csv)
 - [Task 5-day GPU reflected search parameters](results/task5_subtask2/task_five_day_gpu_searched_parameters_reflected.json)
+- Task 5-day GPU NESSAI outputs: `task_five_day_gpu_nessai_*` under `results/task5_subtask2/` after running notebook section 19.
 - [Task 5-day GPU Eryn posterior summary](results/task5_subtask2/task_five_day_gpu_eryn_posterior_summary.csv)
 - [Baseline vs 5-day GPU Eryn comparison](results/task5_subtask2/baseline_vs_five_day_gpu_eryn_parameter_summary.csv)
 
@@ -184,11 +187,11 @@ The real TDC II files were loaded from `0_2_MBHB_TDIXYZ.h5` and `0_2_MBHB_parame
 
 The 100-iteration validation F-statistics search recovers the intrinsic parameters at a useful level for notebook verification: baseline chirp-mass error is about `7.31e3 Msun`, mass-ratio error is `2.80e-4`, and spin errors are `7.98e-3` and `2.21e-2`; for the required 5-day window, chirp-mass error is about `1.15e4 Msun`, mass-ratio error is `3.74e-3`, and spin errors are `6.27e-3` and `3.42e-2`. The sky/extrinsic maximum currently lands on the ecliptic-plane reflected branch rather than the injected sky branch. The notebook therefore writes both the direct search parameters and the `Triangle_BBH.Utils.get_reflected_parameter_dict` reflected parameters, and the search-vs-injection CSV files include `reflected` and `reflected_abs_error` columns for every comparable parameter. The direct and reflected reconstruction figures should be inspected together.
 
-The GPU preflight JSON files now include `log_likelihood_at_injection` / `heterodyned_log_likelihood_at_injection`, computed with the same heterodyned likelihood object used by the GPU Eryn route. These fields are intended as a sanity check that the likelihood can be evaluated at the injected parameters before long sampling starts.
+The GPU preflight JSON files now include `log_likelihood_at_injection` / `heterodyned_log_likelihood_at_injection`, computed with the same heterodyned likelihood object used by the GPU NESSAI route. These fields are intended as a sanity check that the likelihood can be evaluated at the injected parameters before long sampling starts.
 
-The previous Windows-local posterior run used `bilby==1.0.0` with `dynesty==1.0.1` as a smoke sampler. Those CSV files are kept only as historical pipeline-validation outputs. The current WSL2 GPU route has passed a full end-to-end quick check on the real TDC data for both windows. The quick check uses the same BBHx GPU response, F-statistics, Fisher, and heterodyned Eryn code path as the full run, but with reduced Eryn settings (`80` walkers, `4` temperatures, `1000` total steps) so it is a pipeline-validation posterior rather than the final production posterior. The resulting CI90 widths and baseline-vs-5-day comparisons must not be interpreted as scientific conclusions until the full run converges.
+The previous Windows-local posterior run used `bilby==1.0.0` with `dynesty==1.0.1` as a smoke sampler. Those CSV files are kept only as historical pipeline-validation outputs. The previous WSL2 GPU Eryn quick check is also retained only as a pipeline-validation posterior. The production route is now NESSAI with `GPU_NESSAI_RUN_MODE = "pilot"` for a small validation run and `GPU_NESSAI_RUN_MODE = "full"` for the evidence-producing run. The NESSAI benchmark JSON files should be checked first; if batch likelihood throughput is poor, the run should fall back to CPU heterodyned NESSAI or smaller `likelihood_chunksize`.
 
-Because the current production route uses Eryn MCMC rather than nested sampling, it does not provide a Bayesian evidence (`log Z`) estimate for model comparison. After the full run, Section 21 of the notebook should discuss trace plots, autocorrelation or effective-sample diagnostics, the direct/reflected-sky degeneracy, and possible PSD-estimation differences between the symmetric baseline and asymmetric 5-day windows before reporting final posterior conclusions.
+Because the current production route uses NESSAI nested sampling, it is expected to provide Bayesian evidence (`log Z`) and posterior samples for comparing the symmetric baseline and asymmetric 5-day windows. After the full run, Section 21 of the notebook should discuss NESSAI convergence/evidence uncertainty, direct/reflected-sky degeneracy, and possible PSD-estimation differences between the two windows before reporting final posterior conclusions.
 
 ## Environment
 
@@ -217,6 +220,12 @@ The short GPU sanity check is:
 python scripts/gpu_subtask2_preflight.py
 ```
 
+The NESSAI vectorised-interface check is:
+
+```bash
+python scripts/gpu_nessai_vectorized_interface_check.py
+```
+
 Triangle-BBH and Triangle-Simulator may require a separate Linux or WSL2 environment. See the official repositories:
 
 - Triangle-BBH: https://github.com/TriangleDataCenter/Triangle-BBH
@@ -226,14 +235,15 @@ Triangle-BBH and Triangle-Simulator may require a separate Linux or WSL2 environ
 
 1. Run `notebooks/01_ldc_time_frequency_visualization.ipynb` for subtask 1.
 2. Run `notebooks/02_taiji_mbhb_parameter_estimation.ipynb` with the `tri_env-task5-wsl2` kernel.
-3. The notebook default main route now runs GPU preflight, GPU F-statistics search, GPU Fisher analysis, and GPU heterodyned Eryn sampling for both the baseline and task 5-day windows.
+3. The notebook default main route now runs GPU preflight, GPU F-statistics search, GPU Fisher analysis, and vectorised GPU-heterodyned NESSAI for both the baseline and task 5-day windows.
 4. Keep `RUN_CPU_EXAMPLE4_FSTAT = False` and `RUN_CPU_NESSAI = False` unless you explicitly want the slower CPU reference route.
-5. Use `GPU_ERYN_RUN_MODE = "quick_check"` to verify the complete notebook quickly; switch to `GPU_ERYN_RUN_MODE = "full"` for the long official-scale Eryn run.
-6. For timing diagnostics only, run `python scripts/gpu_subtask2_benchmark.py`.
+5. Use `GPU_NESSAI_RUN_MODE = "pilot"` with `GPU_NESSAI_PILOT_NLIVE = 200` to validate the route quickly; switch to `GPU_NESSAI_RUN_MODE = "full"` with `GPU_NESSAI_FULL_NLIVE = 2000` for the evidence-producing run.
+6. Before the long run, check `python scripts/gpu_nessai_vectorized_interface_check.py` and the notebook-generated `*_gpu_nessai_vectorized_benchmark.json` files.
+7. For lower-level timing diagnostics only, run `python scripts/gpu_subtask2_benchmark.py`.
 
 ## Remaining Work
 
-Subtask 2 is implemented and the WSL2 GPU route has been executed end to end in quick-check mode on the real TDC data. The remaining production step is to run the same notebook in full Eryn mode and inspect trace/mixing diagnostics before treating the posterior summaries as final.
+Subtask 2 is implemented with the GPU-heterodyned NESSAI route. The remaining production step is to run the notebook in `GPU_NESSAI_RUN_MODE = "pilot"` first, inspect the vectorised likelihood benchmark and posterior sanity checks, then run `GPU_NESSAI_RUN_MODE = "full"` for both windows before treating evidence and posterior summaries as final.
 
 ## Notes
 
