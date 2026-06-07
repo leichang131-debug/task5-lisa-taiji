@@ -149,6 +149,11 @@ Example 4 data loading / A,E construction / FFT / PSD / covariance / windows
 
 The CPU Bilby/NESSAI path is retained in the notebook as a reference fallback, but it is not the default route because the local run is much slower. The previous CPU NESSAI attempt ran for about 4 hours and still had `dlogZ ~ 1497`, far from the `stopping=0.1` target. The current route keeps NESSAI but exposes `Triangle_BBH.Fisher.Likelihood.het_log_like_vectorized` through a custom `nessai.model.Model`, so NESSAI can evaluate batches of live points with the GPU heterodyned likelihood. This should be substantially faster than Example 4's full-frequency CPU likelihood if the benchmark cell confirms high batch throughput.
 
+Two guardrails are built into the notebook before production sampling:
+
+- Coordinate check: `*_gpu_nessai_coordinate_check.json` compares the likelihood from Triangle-BBH internal `ParamDict2ParamArr` coordinates against an intentionally wrong raw physical-coordinate call. Production runs should proceed only if the internal-coordinate likelihood is the self-consistent branch and the round-trip error is negligible.
+- Sky-prior mode: `GPU_NESSAI_SKY_PRIOR_MODE = "wide_sky"` widens `inclination`, `longitude`, `latitude`, `psi`, and `coalescence_phase` to include both the direct and ecliptic-reflected sky modes. Set it to `"local_fisher"` only for a deliberately local reflected-branch run.
+
 Current subtask 2 outputs:
 
 - [Baseline time series](figures/task5_subtask2/01_baseline_timeseries.png)
@@ -238,7 +243,7 @@ Triangle-BBH and Triangle-Simulator may require a separate Linux or WSL2 environ
 3. The notebook default main route now runs GPU preflight, GPU F-statistics search, GPU Fisher analysis, and vectorised GPU-heterodyned NESSAI for both the baseline and task 5-day windows.
 4. Keep `RUN_CPU_EXAMPLE4_FSTAT = False` and `RUN_CPU_NESSAI = False` unless you explicitly want the slower CPU reference route.
 5. Use `GPU_NESSAI_RUN_MODE = "pilot"` with `GPU_NESSAI_PILOT_NLIVE = 200` to validate the route quickly; switch to `GPU_NESSAI_RUN_MODE = "full"` with `GPU_NESSAI_FULL_NLIVE = 2000` for the evidence-producing run.
-6. Before the long run, check `python scripts/gpu_nessai_vectorized_interface_check.py` and the notebook-generated `*_gpu_nessai_vectorized_benchmark.json` files.
+6. Before the long run, check `python scripts/gpu_nessai_vectorized_interface_check.py`, the notebook-generated `*_gpu_nessai_coordinate_check.json`, and the `*_gpu_nessai_vectorized_benchmark.json` files.
 7. For lower-level timing diagnostics only, run `python scripts/gpu_subtask2_benchmark.py`.
 
 ## Remaining Work

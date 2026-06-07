@@ -170,8 +170,10 @@ GPU_NESSAI_NLIVE = GPU_NESSAI_PILOT_NLIVE if GPU_NESSAI_RUN_MODE == "pilot" else
 GPU_NESSAI_STOPPING = 0.1
 GPU_NESSAI_LIKELIHOOD_CHUNKSIZE = 512
 GPU_NESSAI_PRIOR_SIGMA = 8.0
+GPU_NESSAI_SKY_PRIOR_MODE = "wide_sky"  # "wide_sky" includes direct/reflected sky modes; "local_fisher" is faster but local.
 GPU_NESSAI_SEED = 1234
 RUN_GPU_NESSAI_BENCHMARK = True
+RUN_GPU_NESSAI_COORDINATE_CHECK = True
 GPU_ERYN_RUN_MODE = "quick_check"
 GPU_ERYN_FULL_NWALKERS = 400
 GPU_ERYN_FULL_NTEMPS = 10
@@ -1253,6 +1255,26 @@ def build_gpu_heterodyned_likelihood(gpu_search: dict) -> Likelihood:
     Like_gpu.prepare_het_log_like(base_parameters=ParamDict2ParamArr(gpu_search["searched_parameters"]))
     return Like_gpu
 
+def physical_to_internal_array(param_dict: dict) -> np.ndarray:
+    return np.array(ParamDict2ParamArr(param_dict), dtype=float)
+
+def internal_array_to_structured(param_array: np.ndarray):
+    arr = np.asarray(param_array, dtype=float)
+    if arr.ndim == 1:
+        arr = arr[np.newaxis, :]
+    x = np.zeros(arr.shape[0], dtype=[(name, "f8") for name in GPU_NESSAI_INTERNAL_PARAM_NAMES])
+    for i, name in enumerate(GPU_NESSAI_INTERNAL_PARAM_NAMES):
+        x[name] = arr[:, i]
+    return x
+
+def physical_array_in_physical_order(param_dict: dict) -> np.ndarray:
+    return np.array([float(param_dict[name]) for name in GPU_NESSAI_PHYSICAL_PARAM_NAMES], dtype=float)
+
+def to_numpy_array(value) -> np.ndarray:
+    if cp is not None and isinstance(value, cp.ndarray):
+        value = cp.asnumpy(value)
+    return np.asarray(value, dtype=float)
+
 def build_gpu_nessai_bounds(gpu_search: dict, FIM=None, nsigma: float = GPU_NESSAI_PRIOR_SIGMA) -> tuple[dict, dict]:
     # Build Fisher-centred physical bounds and convert them to Triangle-BBH array coordinates.
     search = dict(gpu_search["searched_parameters"])
@@ -1271,6 +1293,9 @@ def build_gpu_nessai_bounds(gpu_search: dict, FIM=None, nsigma: float = GPU_NESS
             fallback = GPU_NESSAI_FALLBACK_HALF_WIDTHS[name]
             lower_phys[name] = float(max(hard_lo, center - fallback))
             upper_phys[name] = float(min(hard_hi, center + fallback))
+    if GPU_NESSAI_SKY_PRIOR_MODE == "wide_sky":
+        for name in ["inclination", "longitude", "latitude", "psi", "coalescence_phase"]:
+            lower_phys[name], upper_phys[name] = map(float, GPU_NESSAI_PHYSICAL_LIMITS[name])
     lo_arr = np.array(ParamDict2ParamArr(lower_phys), dtype=float)
     hi_arr = np.array(ParamDict2ParamArr(upper_phys), dtype=float)
     bounds = {}
@@ -1305,9 +1330,7 @@ class TaijiGPUHeterodynedNESSAIModel(Model):
     def log_likelihood(self, x):
         params = np.vstack([np.atleast_1d(x[name]).astype(float) for name in self.names])
         ll = self._like_gpu.het_log_like_vectorized(params)
-        if cp is not None and isinstance(ll, cp.ndarray):
-            ll = cp.asnumpy(ll)
-        ll = np.asarray(ll, dtype=float).reshape(-1)
+        ll = to_numpy_array(ll).reshape(-1)
         return ll if x.size > 1 else float(ll[0])
 
 def structured_samples_to_physical_dataframe(samples) -> pd.DataFrame:
@@ -1316,6 +1339,41 @@ def structured_samples_to_physical_dataframe(samples) -> pd.DataFrame:
         arr = np.array([row[name] for name in GPU_NESSAI_INTERNAL_PARAM_NAMES], dtype=float)
         rows.append(ParamArr2ParamDict(arr))
     return pd.DataFrame(rows)
+
+def run_gpu_nessai_coordinate_check(model: TaijiGPUHeterodynedNESSAIModel, gpu_search: dict, label: str) -> dict:
+    searched_internal = physical_to_internal_array(gpu_search["searched_parameters"])
+    searched_structured = internal_array_to_structured(searched_internal)
+    searched_internal_logl = float(np.asarray(model.log_likelihood(searched_structured)).reshape(-1)[0])
+
+    searched_physical_raw = physical_array_in_physical_order(gpu_search["searched_parameters"])
+    searched_physical_raw_logl = float(to_numpy_array(model._like_gpu.het_log_like_vectorized(searched_physical_raw[:, np.newaxis])).reshape(-1)[0])
+
+    injection_internal = physical_to_internal_array(injected_parameters)
+    injection_structured = internal_array_to_structured(injection_internal)
+    injection_internal_logl = float(np.asarray(model.log_likelihood(injection_structured)).reshape(-1)[0])
+    preflight_path = RESULT_DIR / f"{label}_gpu_preflight.json"
+    preflight_logl = None
+    if preflight_path.exists():
+        preflight_logl = json.loads(preflight_path.read_text(encoding="utf-8")).get("log_likelihood_at_injection")
+
+    roundtrip = ParamArr2ParamDict(searched_internal)
+    max_roundtrip_abs_error = float(max(abs(float(roundtrip[name]) - float(gpu_search["searched_parameters"][name])) for name in GPU_NESSAI_PHYSICAL_PARAM_NAMES))
+    report = {
+        "label": label,
+        "coordinate_space": "Triangle-BBH internal ParamDict2ParamArr coordinates",
+        "prior_space": "uniform in internal coordinates; log parameters imply Jeffreys-like physical priors for chirp mass and luminosity distance",
+        "searched_internal_log_likelihood": searched_internal_logl,
+        "searched_physical_raw_log_likelihood": searched_physical_raw_logl,
+        "injection_internal_log_likelihood": injection_internal_logl,
+        "preflight_log_likelihood_at_injection": preflight_logl,
+        "injection_minus_preflight": None if preflight_logl is None else injection_internal_logl - float(preflight_logl),
+        "physical_raw_minus_internal": searched_physical_raw_logl - searched_internal_logl,
+        "max_roundtrip_abs_error": max_roundtrip_abs_error,
+        "passes_roundtrip": bool(max_roundtrip_abs_error < 1e-7),
+    }
+    save_json(report, f"{label}_gpu_nessai_coordinate_check.json")
+    print(json.dumps(report, indent=2))
+    return report
 
 def benchmark_gpu_nessai_likelihood(model: TaijiGPUHeterodynedNESSAIModel, label: str, n: int = 2048) -> dict:
     import time
@@ -1374,6 +1432,8 @@ def run_gpu_nessai_sampler(gpu_search: dict, FIM, label: str):
         likelihood_chunksize=GPU_NESSAI_LIKELIHOOD_CHUNKSIZE,
         pytorch_threads=1,
     )
+    if RUN_GPU_NESSAI_COORDINATE_CHECK:
+        run_gpu_nessai_coordinate_check(model, gpu_search, label)
     if RUN_GPU_NESSAI_BENCHMARK:
         benchmark_gpu_nessai_likelihood(model, label)
     save_json(
@@ -1385,6 +1445,9 @@ def run_gpu_nessai_sampler(gpu_search: dict, FIM, label: str):
             "stopping": GPU_NESSAI_STOPPING,
             "seed": GPU_NESSAI_SEED,
             "likelihood_chunksize": GPU_NESSAI_LIKELIHOOD_CHUNKSIZE,
+            "prior_sigma": GPU_NESSAI_PRIOR_SIGMA,
+            "sky_prior_mode": GPU_NESSAI_SKY_PRIOR_MODE,
+            "prior_coordinate_space": "Triangle-BBH internal ParamDict2ParamArr coordinates",
             "sampler": "nessai.FlowSampler",
             "likelihood": "Triangle_BBH GPU heterodyned het_log_like_vectorized",
         },
