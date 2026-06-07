@@ -170,7 +170,7 @@ GPU_NESSAI_NLIVE = GPU_NESSAI_PILOT_NLIVE if GPU_NESSAI_RUN_MODE == "pilot" else
 GPU_NESSAI_STOPPING = 0.1
 GPU_NESSAI_LIKELIHOOD_CHUNKSIZE = 512
 GPU_NESSAI_PRIOR_SIGMA = 8.0
-GPU_NESSAI_SKY_PRIOR_MODE = "wide_sky"  # "wide_sky" includes direct/reflected sky modes; "local_fisher" is faster but local.
+GPU_NESSAI_SKY_PRIOR_MODE = "local_fisher"  # safer for heterodyned likelihood; use "wide_sky" only as an exploratory stress test.
 GPU_NESSAI_SEED = 1234
 RUN_GPU_NESSAI_BENCHMARK = True
 RUN_GPU_NESSAI_COORDINATE_CHECK = True

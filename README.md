@@ -152,7 +152,7 @@ The CPU Bilby/NESSAI path is retained in the notebook as a reference fallback, b
 Two guardrails are built into the notebook before production sampling:
 
 - Coordinate check: `*_gpu_nessai_coordinate_check.json` compares the likelihood from Triangle-BBH internal `ParamDict2ParamArr` coordinates against an intentionally wrong raw physical-coordinate call. Production runs should proceed only if the internal-coordinate likelihood is the self-consistent branch and the round-trip error is negligible.
-- Sky-prior mode: `GPU_NESSAI_SKY_PRIOR_MODE = "wide_sky"` widens `inclination`, `longitude`, `latitude`, `psi`, and `coalescence_phase` to include both the direct and ecliptic-reflected sky modes. Set it to `"local_fisher"` only for a deliberately local reflected-branch run.
+- Sky-prior mode: `GPU_NESSAI_SKY_PRIOR_MODE = "local_fisher"` is the default because the heterodyned likelihood is built around one fiducial waveform. `wide_sky` is available only as an exploratory stress test; for a rigorous direct-vs-reflected comparison, run two local branches with separate fiducial/search points and compare their `logZ`.
 
 Current subtask 2 outputs:
 
@@ -194,7 +194,7 @@ The 100-iteration validation F-statistics search recovers the intrinsic paramete
 
 The GPU preflight JSON files now include `log_likelihood_at_injection` / `heterodyned_log_likelihood_at_injection`, computed with the same heterodyned likelihood object used by the GPU NESSAI route. These fields are intended as a sanity check that the likelihood can be evaluated at the injected parameters before long sampling starts.
 
-The previous Windows-local posterior run used `bilby==1.0.0` with `dynesty==1.0.1` as a smoke sampler. Those CSV files are kept only as historical pipeline-validation outputs. The previous WSL2 GPU Eryn quick check is also retained only as a pipeline-validation posterior. The production route is now NESSAI with `GPU_NESSAI_RUN_MODE = "pilot"` for a small validation run and `GPU_NESSAI_RUN_MODE = "full"` for the evidence-producing run. The NESSAI benchmark JSON files should be checked first; if batch likelihood throughput is poor, the run should fall back to CPU heterodyned NESSAI or smaller `likelihood_chunksize`.
+The previous Windows-local posterior run used `bilby==1.0.0` with `dynesty==1.0.1` as a smoke sampler. Those CSV files are kept only as historical pipeline-validation outputs. The previous WSL2 GPU Eryn quick check is also retained only as a pipeline-validation posterior. The production route is now NESSAI with `GPU_NESSAI_RUN_MODE = "pilot"` for a small validation run and `GPU_NESSAI_RUN_MODE = "full"` for the evidence-producing run. The local benchmark currently evaluates `het_log_like_vectorized(4000)` in about `0.28 s`, i.e. roughly `1.3e4-1.4e4` likelihood points/s before NESSAI flow-training overhead. The NESSAI benchmark JSON files should still be checked first; if batch likelihood throughput is poor, reduce `likelihood_chunksize` from `512` to `256`.
 
 Because the current production route uses NESSAI nested sampling, it is expected to provide Bayesian evidence (`log Z`) and posterior samples for comparing the symmetric baseline and asymmetric 5-day windows. After the full run, Section 21 of the notebook should discuss NESSAI convergence/evidence uncertainty, direct/reflected-sky degeneracy, and possible PSD-estimation differences between the two windows before reporting final posterior conclusions.
 
@@ -249,6 +249,14 @@ Triangle-BBH and Triangle-Simulator may require a separate Linux or WSL2 environ
 ## Remaining Work
 
 Subtask 2 is implemented with the GPU-heterodyned NESSAI route. The remaining production step is to run the notebook in `GPU_NESSAI_RUN_MODE = "pilot"` first, inspect the vectorised likelihood benchmark and posterior sanity checks, then run `GPU_NESSAI_RUN_MODE = "full"` for both windows before treating evidence and posterior summaries as final.
+
+Preliminary runtime estimate on the current WSL2 GPU setup:
+
+- Cached-search pilot run (`nlive=200`, one window): about `10-30 min`, mostly NESSAI setup/training overhead rather than raw likelihood time.
+- Cached-search full run (`nlive=2000`, one local-fisher window): plausibly `40-90 min` if vectorised throughput remains near the current benchmark and proposal efficiency is reasonable.
+- Two windows full run: roughly `1.5-3 h`.
+- Re-running the full GPU F-statistics search instead of using cached search results can add tens of minutes per window, depending on `GPU_SEARCH_MAXITER`.
+- `wide_sky` can be substantially slower and less reliable with a single heterodyned fiducial; prefer two separate local-fisher branches for direct/reflected mode comparison.
 
 ## Notes
 
