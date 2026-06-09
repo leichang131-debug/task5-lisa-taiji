@@ -173,6 +173,7 @@ GPU_NESSAI_PRIOR_SIGMA = 8.0
 GPU_NESSAI_SKY_PRIOR_MODE = "local_fisher"  # safer for heterodyned likelihood; use "wide_sky" only as an exploratory stress test.
 GPU_NESSAI_SEED = 1234
 GPU_NESSAI_RESUME = True
+GPU_NESSAI_PLOT_DIAGNOSTICS = True
 GPU_NESSAI_BOUNDARY_RELATIVE_TOL = 0.02
 GPU_NESSAI_BOUNDARY_WARNING_FRACTION = 0.05
 RUN_GPU_NESSAI_BENCHMARK = True
@@ -239,6 +240,20 @@ except Exception as exc:
     HAS_CUPY = False
     print("CuPy unavailable, GPU route will be skipped:", repr(exc))
 
+try:
+    import torch
+    HAS_TORCH = True
+    TORCH_CUDA_AVAILABLE = bool(torch.cuda.is_available())
+    TORCH_VERSION = torch.__version__
+    TORCH_CUDA_VERSION = torch.version.cuda
+except Exception as exc:
+    torch = None
+    HAS_TORCH = False
+    TORCH_CUDA_AVAILABLE = False
+    TORCH_VERSION = "unavailable"
+    TORCH_CUDA_VERSION = None
+    print("PyTorch unavailable; NESSAI flow training may fall back to CPU or fail:", repr(exc))
+
 if not hasattr(np, "int"):
     np.int = int
 if not hasattr(np, "float"):
@@ -272,6 +287,9 @@ print("NESSAI available:", HAS_NESSAI)
 print("CuPy available:", HAS_CUPY)
 if HAS_CUPY:
     print("CuPy devices:", xp.cuda.runtime.getDeviceCount())
+print("PyTorch available:", HAS_TORCH)
+print("PyTorch CUDA available:", TORCH_CUDA_AVAILABLE)
+print("PyTorch version:", TORCH_VERSION, "CUDA:", TORCH_CUDA_VERSION)
 print("bilby samplers:", sorted(bilby.core.sampler.IMPLEMENTED_SAMPLERS.keys()))
 """
     ),
@@ -870,6 +888,7 @@ manifest = {
     "baseline_gpu_nessai_posterior": "results/task5_subtask2/baseline_example4_gpu_nessai_posterior_summary.csv",
     "baseline_gpu_nessai_evidence": "results/task5_subtask2/baseline_example4_gpu_nessai_evidence.json",
     "baseline_gpu_nessai_diagnostics": "results/task5_subtask2/baseline_example4_gpu_nessai_diagnostics.json",
+    "baseline_gpu_nessai_native_diagnostics": "results/task5_subtask2/baseline_example4_gpu_nessai_native_diagnostics.json",
     "baseline_gpu_nessai_boundary_check": "results/task5_subtask2/baseline_example4_gpu_nessai_boundary_check.csv",
     "baseline_gpu_eryn_posterior": "results/task5_subtask2/baseline_example4_gpu_eryn_posterior_summary.csv",
     "five_day_gpu_preflight": "results/task5_subtask2/task_five_day_gpu_preflight.json",
@@ -878,6 +897,7 @@ manifest = {
     "five_day_gpu_nessai_posterior": "results/task5_subtask2/task_five_day_gpu_nessai_posterior_summary.csv",
     "five_day_gpu_nessai_evidence": "results/task5_subtask2/task_five_day_gpu_nessai_evidence.json",
     "five_day_gpu_nessai_diagnostics": "results/task5_subtask2/task_five_day_gpu_nessai_diagnostics.json",
+    "five_day_gpu_nessai_native_diagnostics": "results/task5_subtask2/task_five_day_gpu_nessai_native_diagnostics.json",
     "five_day_gpu_nessai_boundary_check": "results/task5_subtask2/task_five_day_gpu_nessai_boundary_check.csv",
     "five_day_gpu_eryn_posterior": "results/task5_subtask2/task_five_day_gpu_eryn_posterior_summary.csv",
     "gpu_comparison_table": "results/task5_subtask2/baseline_vs_five_day_gpu_nessai_parameter_summary.csv",
@@ -1437,6 +1457,22 @@ def maybe_get_attr_or_key(obj, name: str):
     except Exception:
         return None
 
+def collect_nessai_native_diagnostics(output: Path, label: str) -> dict:
+    keywords = ("insert", "diagnostic", "stats", "proposal", "population", "log", "summary")
+    files = []
+    if output.exists():
+        for path in sorted(output.rglob("*")):
+            if path.is_file() and any(key in path.name.lower() for key in keywords):
+                files.append(str(path.relative_to(REPO_ROOT)))
+    report = {
+        "label": label,
+        "output": str(output.relative_to(REPO_ROOT)),
+        "native_diagnostic_files": files,
+        "diagnostic_note": "Prefer NESSAI's native insertion-index/statistics plots and logs when available; the JSON KS statistic below is a lightweight secondary check.",
+    }
+    save_json(report, f"{label}_gpu_nessai_native_diagnostics.json")
+    return report
+
 def extract_nessai_diagnostics(fs, label: str) -> dict:
     from scipy.stats import kstest
 
@@ -1446,7 +1482,7 @@ def extract_nessai_diagnostics(fs, label: str) -> dict:
         nested_sampler = getattr(fs, "ns", None)
     report = {
         "label": label,
-        "diagnostic_note": "Insertion indices should be consistent with a uniform distribution; low p-values indicate possible over- or under-constraining.",
+        "diagnostic_note": "Insertion indices should be consistent with a uniform discrete distribution; use NESSAI's native insertion-index diagnostics as primary evidence and this continuous KS approximation as a secondary screen.",
         "has_insertion_indices": False,
         "insertion_index_count": 0,
         "insertion_index_ks_statistic": None,
@@ -1519,6 +1555,7 @@ def posterior_boundary_check(posterior_df: pd.DataFrame, physical_bounds: dict, 
     save_json(
         {
             "label": label,
+            "boundary_kind": "Fisher-centred sampling box used by this NESSAI run, not the global physical hard bounds",
             "relative_tolerance": GPU_NESSAI_BOUNDARY_RELATIVE_TOL,
             "warning_fraction": GPU_NESSAI_BOUNDARY_WARNING_FRACTION,
             "warning_parameters": warning_parameters,
@@ -1532,6 +1569,7 @@ def posterior_boundary_check(posterior_df: pd.DataFrame, physical_bounds: dict, 
     return check
 
 def run_gpu_nessai_sampler(gpu_search: dict, FIM, label: str):
+    import time
     from nessai.flowsampler import FlowSampler
     bounds, physical_bounds = build_gpu_nessai_bounds(gpu_search, FIM)
     like_gpu = build_gpu_heterodyned_likelihood(gpu_search)
@@ -1566,18 +1604,25 @@ def run_gpu_nessai_sampler(gpu_search: dict, FIM, label: str):
             "stopping": GPU_NESSAI_STOPPING,
             "seed": GPU_NESSAI_SEED,
             "resume": GPU_NESSAI_RESUME,
+            "plot_diagnostics": GPU_NESSAI_PLOT_DIAGNOSTICS,
             "likelihood_chunksize": GPU_NESSAI_LIKELIHOOD_CHUNKSIZE,
             "prior_sigma": GPU_NESSAI_PRIOR_SIGMA,
             "sky_prior_mode": GPU_NESSAI_SKY_PRIOR_MODE,
             "boundary_relative_tolerance": GPU_NESSAI_BOUNDARY_RELATIVE_TOL,
             "boundary_warning_fraction": GPU_NESSAI_BOUNDARY_WARNING_FRACTION,
+            "torch_available": HAS_TORCH,
+            "torch_cuda_available": TORCH_CUDA_AVAILABLE,
+            "torch_version": TORCH_VERSION,
+            "torch_cuda_version": TORCH_CUDA_VERSION,
             "prior_coordinate_space": "Triangle-BBH internal ParamDict2ParamArr coordinates",
             "sampler": "nessai.FlowSampler",
             "likelihood": "Triangle_BBH GPU heterodyned het_log_like_vectorized",
         },
         f"{label}_gpu_nessai_run_config.json",
     )
-    fs.run(plot=False, save=True)
+    run_start = time.time()
+    fs.run(plot=GPU_NESSAI_PLOT_DIAGNOSTICS, save=True)
+    wall_time_seconds = time.time() - run_start
     extracted = extract_nessai_result(fs)
     posterior = extracted["posterior"]
     if posterior is None:
@@ -1587,6 +1632,7 @@ def run_gpu_nessai_sampler(gpu_search: dict, FIM, label: str):
     summary = posterior_summary(posterior_df, GPU_NESSAI_PHYSICAL_PARAM_NAMES)
     summary.to_csv(RESULT_DIR / f"{label}_gpu_nessai_posterior_summary.csv", index=False)
     boundary_check = posterior_boundary_check(posterior_df, physical_bounds, label)
+    native_diagnostics = collect_nessai_native_diagnostics(output, label)
     diagnostics = extract_nessai_diagnostics(fs, label)
     save_json(
         {
@@ -1594,8 +1640,15 @@ def run_gpu_nessai_sampler(gpu_search: dict, FIM, label: str):
             "log_evidence": None if extracted["log_evidence"] is None else float(extracted["log_evidence"]),
             "log_evidence_error": None if extracted["log_evidence_error"] is None else float(extracted["log_evidence_error"]),
             "posterior_samples": int(len(posterior_df)),
+            "wall_time_seconds": float(wall_time_seconds),
+            "wall_time_minutes": float(wall_time_seconds / 60.0),
+            "seed": GPU_NESSAI_SEED,
+            "run_mode": GPU_NESSAI_RUN_MODE,
+            "nlive": GPU_NESSAI_NLIVE,
+            "torch_cuda_available": TORCH_CUDA_AVAILABLE,
             "insertion_index_ks_pvalue": diagnostics.get("insertion_index_ks_pvalue"),
             "max_boundary_fraction": None if boundary_check.empty else float(boundary_check["max_boundary_fraction"].max()),
+            "native_diagnostic_file_count": len(native_diagnostics["native_diagnostic_files"]),
         },
         f"{label}_gpu_nessai_evidence.json",
     )
@@ -1755,14 +1808,15 @@ Report these points in the README:
 3. Modified task window: `tc - 4 days` to `tc + 1 day`.
 4. Whether the GPU-heterodyned NESSAI route changes search parameters, reconstruction residuals, Fisher estimates, evidence, or posterior credible intervals.
 5. Which parameters improve most and which remain degenerate or multimodal.
-6. NESSAI diagnostics: insertion-index KS p-value, evidence uncertainty, proposal/population efficiency if available in the NESSAI logs, and whether posterior mass touches any Fisher prior-box edge.
-7. Limitations: possible multimodality, direct/reflected sky degeneracy, local GPU memory constraints, the local-fiducial nature of the heterodyned likelihood, and the dependence of speed-up on vectorised likelihood batch throughput versus flow-training overhead.
+6. NESSAI diagnostics: native insertion-index/log files, auxiliary KS p-value, evidence uncertainty, proposal/population efficiency if available in the NESSAI logs, and whether posterior mass touches any Fisher sampling-box edge.
+7. Runtime diagnostics: actual wall-clock minutes from `*_gpu_nessai_evidence.json`, fixed random seed, and whether `torch.cuda.is_available()` was true for flow training.
+8. Limitations: possible multimodality, direct/reflected sky degeneracy, local GPU memory constraints, the local-fiducial nature of the heterodyned likelihood, and the dependence of speed-up on vectorised likelihood batch throughput versus flow-training overhead.
 
 Conclusion draft:
 
 - Baseline GPU NESSAI run: TODO after NESSAI finishes.
 - Modified 5-day GPU NESSAI run: TODO after NESSAI finishes.
-- Quantitative posterior/evidence comparison: TODO after both GPU NESSAI summaries, evidence JSON files, insertion-index diagnostics, and boundary checks are generated.
+- Quantitative posterior/evidence comparison: TODO after both GPU NESSAI summaries, evidence JSON files, native/auxiliary insertion-index diagnostics, and boundary checks are generated.
 """
     ),
 ]
