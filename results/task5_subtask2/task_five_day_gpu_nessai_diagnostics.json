@@ -1,0 +1,10 @@
+{
+  "label": "task_five_day",
+  "diagnostic_note": "Insertion indices should be consistent with a uniform discrete distribution; use NESSAI's native insertion-index diagnostics as primary evidence and this continuous KS approximation as a secondary screen.",
+  "has_insertion_indices": true,
+  "insertion_index_count": 75869,
+  "insertion_index_ks_statistic": 0.0033629446809632646,
+  "insertion_index_ks_pvalue": 0.3566695101768089,
+  "insertion_index_min": 0.0,
+  "insertion_index_max": 1999.0
+}

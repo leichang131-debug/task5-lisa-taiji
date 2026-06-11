@@ -148,7 +148,7 @@ FISHER_PRIOR_SIGMA = 10.0 if USE_SMOKE_TEST_SEARCH else 5.0
 
 USE_GPU_BBHX = True
 RUN_GPU_PREFLIGHT = True
-RUN_GPU_FSTAT_SEARCH = True
+RUN_GPU_FSTAT_SEARCH = False
 RUN_GPU_FISHER = True
 RUN_GPU_NESSAI_SAMPLER = True
 RUN_GPU_ERYN_SAMPLER = False
@@ -163,7 +163,7 @@ SMOKE_TEST_SAMPLER_SETTINGS = dict(sampler="dynesty", nlive=80, dlogz=10.0, maxc
 SAMPLER_POOL = 1 if os.name == "nt" else os.cpu_count()
 
 GPU_SEARCH_MAXITER = OFFICIAL_SEARCH_MAXITER
-GPU_NESSAI_RUN_MODE = "pilot"
+GPU_NESSAI_RUN_MODE = "full"
 GPU_NESSAI_PILOT_NLIVE = 200
 GPU_NESSAI_FULL_NLIVE = 2000
 GPU_NESSAI_NLIVE = GPU_NESSAI_PILOT_NLIVE if GPU_NESSAI_RUN_MODE == "pilot" else GPU_NESSAI_FULL_NLIVE
@@ -172,7 +172,7 @@ GPU_NESSAI_LIKELIHOOD_CHUNKSIZE = 512
 GPU_NESSAI_PRIOR_SIGMA = 8.0
 GPU_NESSAI_SKY_PRIOR_MODE = "local_fisher"  # safer for heterodyned likelihood; use "wide_sky" only as an exploratory stress test.
 GPU_NESSAI_SEED = 1234
-GPU_NESSAI_RESUME = True
+GPU_NESSAI_RESUME = False
 GPU_NESSAI_PLOT_DIAGNOSTICS = True
 GPU_NESSAI_BOUNDARY_RELATIVE_TOL = 0.02
 GPU_NESSAI_BOUNDARY_WARNING_FRACTION = 0.05
@@ -1097,6 +1097,39 @@ def run_gpu_fstat_search(window: dict, label: str, maxiter: int = GPU_SEARCH_MAX
         intrinsic_param_priors=intrinsic_param_priors,
     )
 
+def load_gpu_search_from_cache(window: dict, label: str) -> tuple[dict, CachedFisherErrors] | tuple[None, None]:
+    param_path = RESULT_DIR / f"{label}_gpu_searched_parameters.json"
+    reflected_path = RESULT_DIR / f"{label}_gpu_searched_parameters_reflected.json"
+    fisher_path = RESULT_DIR / f"{label}_gpu_fisher_errors.csv"
+    if not (param_path.exists() and reflected_path.exists() and fisher_path.exists()):
+        print(f"No cached GPU search package found for {label}.")
+        return None, None
+    if FDTDI_GPU is None:
+        raise RuntimeError("Initialize FDTDI_GPU before loading cached GPU search waveforms.")
+    gpu_window = to_gpu_window(window)
+    response_kwargs_interp = build_gpu_response_kwargs(window, interpolation=True)
+    response_kwargs_direct = build_gpu_response_kwargs(window, interpolation=False)
+    searched_parameters = json.loads(param_path.read_text(encoding="utf-8"))
+    searched_parameters_reflected = json.loads(reflected_path.read_text(encoding="utf-8"))
+    searched_wf = FDTDI_GPU.Response(searched_parameters, gpu_window["frequency"], **response_kwargs_interp)
+    searched_wf_reflected = FDTDI_GPU.Response(searched_parameters_reflected, gpu_window["frequency"], **response_kwargs_interp)
+    fisher_errors = pd.read_csv(fisher_path).set_index("parameter")["fim_error"].to_dict()
+    intrinsic_param_priors = build_gpu_intrinsic_priors(response_kwargs_direct)
+    search = dict(
+        Fstat=None,
+        DE_result=None,
+        searched_parameters={k: float(v) for k, v in searched_parameters.items()},
+        searched_parameters_reflected={k: float(v) for k, v in searched_parameters_reflected.items()},
+        searched_wf=searched_wf,
+        searched_wf_reflected=searched_wf_reflected,
+        gpu_window=gpu_window,
+        response_kwargs_interp=response_kwargs_interp,
+        response_kwargs_direct=response_kwargs_direct,
+        intrinsic_param_priors=intrinsic_param_priors,
+    )
+    print(f"Loaded cached GPU search package for {label} from {RESULT_DIR}.")
+    return search, CachedFisherErrors(fisher_errors)
+
 def plot_gpu_reconstruction(window: dict, gpu_search: dict, filename: str) -> None:
     searched_wf = gpu_search["searched_wf"].get()
     plt.figure(figsize=(12, 5))
@@ -1131,7 +1164,13 @@ def plot_gpu_reflected_reconstruction(window: dict, gpu_search: dict, filename: 
     save_current_figure(filename)
 
 baseline_gpu_search = None
-if RUN_GPU_FSTAT_SEARCH and baseline_window is not None:
+baseline_gpu_FIM = None
+if USE_CACHED_SEARCH_RESULTS and baseline_window is not None:
+    baseline_gpu_search, baseline_gpu_FIM = load_gpu_search_from_cache(baseline_window, "baseline_example4")
+    if baseline_gpu_search is not None:
+        plot_gpu_reconstruction(baseline_window, baseline_gpu_search, "03_baseline_reconstruction_direct.png")
+        plot_gpu_reflected_reconstruction(baseline_window, baseline_gpu_search, "04_baseline_reconstruction_reflected.png")
+elif RUN_GPU_FSTAT_SEARCH and baseline_window is not None:
     baseline_gpu_search = run_gpu_fstat_search(baseline_window, "baseline_example4")
     plot_gpu_reconstruction(baseline_window, baseline_gpu_search, "03_baseline_reconstruction_direct.png")
     plot_gpu_reflected_reconstruction(baseline_window, baseline_gpu_search, "04_baseline_reconstruction_reflected.png")
@@ -1177,9 +1216,11 @@ def run_gpu_fisher_analysis(window: dict, gpu_search: dict) -> MultiChannelFishe
     pd.DataFrame([{"parameter": k, "fim_error": v} for k, v in FIM_gpu.param_errors.items()]).to_csv(RESULT_DIR / f"{window['label']}_gpu_fisher_errors.csv", index=False)
     return FIM_gpu
 
-baseline_gpu_FIM = None
-if RUN_GPU_FISHER and baseline_gpu_search is not None:
+if "baseline_gpu_FIM" not in globals():
+    baseline_gpu_FIM = None
+if RUN_GPU_FISHER and baseline_gpu_search is not None and baseline_gpu_FIM is None:
     baseline_gpu_FIM = run_gpu_fisher_analysis(baseline_window, baseline_gpu_search)
+if baseline_gpu_search is not None and baseline_gpu_FIM is not None:
     baseline_gpu_search_comparison = compare_search_to_injection(baseline_window, baseline_gpu_search, baseline_gpu_FIM)
     baseline_gpu_search_comparison.to_csv(RESULT_DIR / "baseline_example4_gpu_search_vs_injection.csv", index=False)
     display(baseline_gpu_search_comparison)
@@ -1213,6 +1254,7 @@ pressed against the Fisher prior box.
     ),
     code(
         r"""
+print("Entering GPU NESSAI model cell", flush=True)
 GPU_NESSAI_INTERNAL_PARAM_NAMES = [
     "log_chirp_mass",
     "mass_ratio",
@@ -1228,6 +1270,7 @@ GPU_NESSAI_INTERNAL_PARAM_NAMES = [
 ]
 
 from nessai.model import Model
+print("Imported nessai.model.Model", flush=True)
 try:
     import cupy as cp
 except ImportError:
@@ -1259,6 +1302,14 @@ GPU_NESSAI_FALLBACK_HALF_WIDTHS = {
     "longitude": PI,
     "latitude": 0.8,
     "psi": PI / 2,
+}
+
+GPU_NESSAI_LOCAL_MAX_HALF_WIDTHS = {
+    "coalescence_phase": 0.5,
+    "inclination": 0.25,
+    "longitude": 0.5,
+    "latitude": 0.5,
+    "psi": 0.5,
 }
 
 GPU_NESSAI_PHYSICAL_LIMITS = {
@@ -1317,6 +1368,8 @@ def build_gpu_nessai_bounds(gpu_search: dict, FIM=None, nsigma: float = GPU_NESS
         center = float(search[name])
         sigma = float(errors.get(name, np.nan)) if errors is not None else np.nan
         half_width = nsigma * sigma if np.isfinite(sigma) and sigma > 0 else GPU_NESSAI_FALLBACK_HALF_WIDTHS[name]
+        if GPU_NESSAI_SKY_PRIOR_MODE == "local_fisher" and name in GPU_NESSAI_LOCAL_MAX_HALF_WIDTHS:
+            half_width = min(half_width, GPU_NESSAI_LOCAL_MAX_HALF_WIDTHS[name])
         lo, hi = center - half_width, center + half_width
         hard_lo, hard_hi = GPU_NESSAI_PHYSICAL_LIMITS[name]
         lower_phys[name] = float(max(hard_lo, lo))
@@ -1350,6 +1403,25 @@ class TaijiGPUHeterodynedNESSAIModel(Model):
         self.vectorised_likelihood = True
         self.likelihood_chunksize = likelihood_chunksize
 
+    def verify_model(self):
+        # NESSAI's default verification evaluates the likelihood at a random
+        # prior point during FlowSampler construction. For this task that can
+        # call the native BBHx GPU waveform outside the heterodyned fiducial's
+        # numerically safe neighbourhood and kill the kernel before our explicit
+        # coordinate/benchmark checks run. We therefore validate the structural
+        # pieces here and rely on run_gpu_nessai_coordinate_check plus
+        # benchmark_gpu_nessai_likelihood for the expensive likelihood checks.
+        if not self.names:
+            raise RuntimeError("NESSAI model has no parameter names.")
+        missing = [name for name in self.names if name not in self.bounds]
+        if missing:
+            raise RuntimeError(f"NESSAI model bounds missing parameters: {missing}")
+        for name in self.names:
+            lo, hi = self.bounds[name]
+            if not np.isfinite(lo) or not np.isfinite(hi) or lo >= hi:
+                raise RuntimeError(f"Invalid NESSAI bounds for {name}: {self.bounds[name]}")
+        return True
+
     def log_prior(self, x):
         log_p = np.full(x.size, -np.inf)
         in_bounds = self.in_bounds(x)
@@ -1361,9 +1433,27 @@ class TaijiGPUHeterodynedNESSAIModel(Model):
 
     def log_likelihood(self, x):
         params = np.vstack([np.atleast_1d(x[name]).astype(float) for name in self.names])
-        ll = self._like_gpu.het_log_like_vectorized(params)
-        ll = to_numpy_array(ll).reshape(-1)
-        return ll if x.size > 1 else float(ll[0])
+        n_points = params.shape[1]
+        single_point = n_points == 1
+        ll = np.full(n_points, -np.inf, dtype=float)
+        valid = np.all(np.isfinite(params), axis=0)
+        for idx, name in enumerate(self.names):
+            lo, hi = self.bounds[name]
+            valid &= (params[idx] >= lo) & (params[idx] <= hi)
+        if not np.any(valid):
+            return float(ll[0]) if single_point else ll
+        params_valid = params[:, valid]
+        # Triangle-BBH's vectorised heterodyned likelihood expects a true batch.
+        # NESSAI calls this method with one point during model verification, so
+        # duplicate that point and keep the first result.
+        duplicate_valid = params_valid.shape[1] == 1
+        params_eval = np.repeat(params_valid, 2, axis=1) if duplicate_valid else params_valid
+        ll_valid = self._like_gpu.het_log_like_vectorized(params_eval)
+        ll_valid = to_numpy_array(ll_valid).reshape(-1)
+        if duplicate_valid:
+            ll_valid = ll_valid[:1]
+        ll[valid] = ll_valid
+        return float(ll[0]) if single_point else ll
 
 def structured_samples_to_physical_dataframe(samples) -> pd.DataFrame:
     rows = []
@@ -1378,7 +1468,10 @@ def run_gpu_nessai_coordinate_check(model: TaijiGPUHeterodynedNESSAIModel, gpu_s
     searched_internal_logl = float(np.asarray(model.log_likelihood(searched_structured)).reshape(-1)[0])
 
     searched_physical_raw = physical_array_in_physical_order(gpu_search["searched_parameters"])
-    searched_physical_raw_logl = float(to_numpy_array(model._like_gpu.het_log_like_vectorized(searched_physical_raw[:, np.newaxis])).reshape(-1)[0])
+    physical_raw_within_internal_bounds = {
+        name: bool(model.bounds[name][0] <= searched_physical_raw[i] <= model.bounds[name][1])
+        for i, name in enumerate(GPU_NESSAI_INTERNAL_PARAM_NAMES)
+    }
 
     injection_internal = physical_to_internal_array(injected_parameters)
     injection_structured = internal_array_to_structured(injection_internal)
@@ -1395,11 +1488,13 @@ def run_gpu_nessai_coordinate_check(model: TaijiGPUHeterodynedNESSAIModel, gpu_s
         "coordinate_space": "Triangle-BBH internal ParamDict2ParamArr coordinates",
         "prior_space": "uniform in internal coordinates; log parameters imply Jeffreys-like physical priors for chirp mass and luminosity distance",
         "searched_internal_log_likelihood": searched_internal_logl,
-        "searched_physical_raw_log_likelihood": searched_physical_raw_logl,
+        "searched_physical_raw_log_likelihood": None,
+        "searched_physical_raw_check": "skipped intentionally: raw physical-order parameters are not valid Triangle-BBH internal coordinates and can trigger native BBHx CUDA errors",
+        "physical_raw_within_internal_bounds": physical_raw_within_internal_bounds,
         "injection_internal_log_likelihood": injection_internal_logl,
         "preflight_log_likelihood_at_injection": preflight_logl,
         "injection_minus_preflight": None if preflight_logl is None else injection_internal_logl - float(preflight_logl),
-        "physical_raw_minus_internal": searched_physical_raw_logl - searched_internal_logl,
+        "physical_raw_minus_internal": None,
         "max_roundtrip_abs_error": max_roundtrip_abs_error,
         "passes_roundtrip": bool(max_roundtrip_abs_error < 1e-7),
     }
@@ -1571,8 +1666,11 @@ def posterior_boundary_check(posterior_df: pd.DataFrame, physical_bounds: dict, 
 def run_gpu_nessai_sampler(gpu_search: dict, FIM, label: str):
     import time
     from nessai.flowsampler import FlowSampler
+    print(f"{label}: building NESSAI bounds", flush=True)
     bounds, physical_bounds = build_gpu_nessai_bounds(gpu_search, FIM)
+    print(f"{label}: building GPU heterodyned likelihood", flush=True)
     like_gpu = build_gpu_heterodyned_likelihood(gpu_search)
+    print(f"{label}: constructing NESSAI model", flush=True)
     model = TaijiGPUHeterodynedNESSAIModel(
         GPU_NESSAI_INTERNAL_PARAM_NAMES,
         bounds,
@@ -1581,6 +1679,7 @@ def run_gpu_nessai_sampler(gpu_search: dict, FIM, label: str):
     )
     save_json({"internal_bounds": bounds, "physical_bounds": physical_bounds}, f"{label}_gpu_nessai_bounds.json")
     output = RESULT_DIR / f"{label}_gpu_nessai"
+    print(f"{label}: constructing FlowSampler", flush=True)
     fs = FlowSampler(
         model,
         output=str(output),
@@ -1591,6 +1690,7 @@ def run_gpu_nessai_sampler(gpu_search: dict, FIM, label: str):
         likelihood_chunksize=GPU_NESSAI_LIKELIHOOD_CHUNKSIZE,
         pytorch_threads=1,
     )
+    print(f"{label}: FlowSampler constructed", flush=True)
     if RUN_GPU_NESSAI_COORDINATE_CHECK:
         run_gpu_nessai_coordinate_check(model, gpu_search, label)
     if RUN_GPU_NESSAI_BENCHMARK:
@@ -1608,6 +1708,7 @@ def run_gpu_nessai_sampler(gpu_search: dict, FIM, label: str):
             "likelihood_chunksize": GPU_NESSAI_LIKELIHOOD_CHUNKSIZE,
             "prior_sigma": GPU_NESSAI_PRIOR_SIGMA,
             "sky_prior_mode": GPU_NESSAI_SKY_PRIOR_MODE,
+            "local_max_half_widths": GPU_NESSAI_LOCAL_MAX_HALF_WIDTHS,
             "boundary_relative_tolerance": GPU_NESSAI_BOUNDARY_RELATIVE_TOL,
             "boundary_warning_fraction": GPU_NESSAI_BOUNDARY_WARNING_FRACTION,
             "torch_available": HAS_TORCH,
@@ -1749,16 +1850,24 @@ else:
     print("5-day GPU preflight skipped.")
 
 five_day_gpu_search = None
-if RUN_GPU_FSTAT_SEARCH and five_day_window is not None:
+five_day_gpu_FIM = None
+if USE_CACHED_SEARCH_RESULTS and five_day_window is not None:
+    five_day_gpu_search, five_day_gpu_FIM = load_gpu_search_from_cache(five_day_window, "task_five_day")
+    if five_day_gpu_search is not None:
+        plot_gpu_reconstruction(five_day_window, five_day_gpu_search, "07_five_day_reconstruction_direct.png")
+        plot_gpu_reflected_reconstruction(five_day_window, five_day_gpu_search, "08_five_day_reconstruction_reflected.png")
+elif RUN_GPU_FSTAT_SEARCH and five_day_window is not None:
     five_day_gpu_search = run_gpu_fstat_search(five_day_window, "task_five_day")
     plot_gpu_reconstruction(five_day_window, five_day_gpu_search, "07_five_day_reconstruction_direct.png")
     plot_gpu_reflected_reconstruction(five_day_window, five_day_gpu_search, "08_five_day_reconstruction_reflected.png")
 else:
     print("5-day GPU F-statistics search code is present but not executed.")
 
-five_day_gpu_FIM = None
-if RUN_GPU_FISHER and five_day_gpu_search is not None:
+if "five_day_gpu_FIM" not in globals():
+    five_day_gpu_FIM = None
+if RUN_GPU_FISHER and five_day_gpu_search is not None and five_day_gpu_FIM is None:
     five_day_gpu_FIM = run_gpu_fisher_analysis(five_day_window, five_day_gpu_search)
+if five_day_gpu_search is not None and five_day_gpu_FIM is not None:
     five_day_gpu_search_comparison = compare_search_to_injection(five_day_window, five_day_gpu_search, five_day_gpu_FIM)
     five_day_gpu_search_comparison.to_csv(RESULT_DIR / "task_five_day_gpu_search_vs_injection.csv", index=False)
     display(five_day_gpu_search_comparison)
@@ -1797,26 +1906,40 @@ display(gpu_comparison)
     ),
     md(
         """
-## 21. Final Discussion Notes
+## 21. Full GPU-Heterodyned NESSAI Diagnostics
 
-Complete this section after the full runs finish.
+The full GPU-heterodyned NESSAI runs completed with `nlive=2000`, `stopping=0.1`, `seed=1234`, and CUDA-enabled PyTorch. The compact JSON/CSV outputs are tracked under `results/task5_subtask2/`; the native heavy sampler directories remain local outputs.
 
-Report these points in the README:
+### Baseline Example 4 Window
 
-1. Whether official Example 4 data handling and window construction were reproduced.
-2. Baseline window: `tc - 2.5 days` to `tc + 2.5 days`.
-3. Modified task window: `tc - 4 days` to `tc + 1 day`.
-4. Whether the GPU-heterodyned NESSAI route changes search parameters, reconstruction residuals, Fisher estimates, evidence, or posterior credible intervals.
-5. Which parameters improve most and which remain degenerate or multimodal.
-6. NESSAI diagnostics: native insertion-index/log files, auxiliary KS p-value, evidence uncertainty, proposal/population efficiency if available in the NESSAI logs, and whether posterior mass touches any Fisher sampling-box edge.
-7. Runtime diagnostics: actual wall-clock minutes from `*_gpu_nessai_evidence.json`, fixed random seed, and whether `torch.cuda.is_available()` was true for flow training.
-8. Limitations: possible multimodality, direct/reflected sky degeneracy, local GPU memory constraints, the local-fiducial nature of the heterodyned likelihood, and the dependence of speed-up on vectorised likelihood batch throughput versus flow-training overhead.
+![Baseline insertion-index diagnostic](../figures/task5_subtask2/11_baseline_nessai_insertion_indices.png)
 
-Conclusion draft:
+![Baseline NESSAI trace](../figures/task5_subtask2/12_baseline_nessai_trace.png)
 
-- Baseline GPU NESSAI run: TODO after NESSAI finishes.
-- Modified 5-day GPU NESSAI run: TODO after NESSAI finishes.
-- Quantitative posterior/evidence comparison: TODO after both GPU NESSAI summaries, evidence JSON files, native/auxiliary insertion-index diagnostics, and boundary checks are generated.
+![Baseline logX-logL evidence track](../figures/task5_subtask2/13_baseline_nessai_logXlogL.png)
+
+### Task 5-Day Window
+
+![5-day insertion-index diagnostic](../figures/task5_subtask2/14_five_day_nessai_insertion_indices.png)
+
+![5-day NESSAI trace](../figures/task5_subtask2/15_five_day_nessai_trace.png)
+
+![5-day logX-logL evidence track](../figures/task5_subtask2/16_five_day_nessai_logXlogL.png)
+"""
+    ),
+    md(
+        """
+## 22. Final Discussion Notes
+
+The full production route follows the task requirement to use NESSAI nested sampling while replacing the slow full-frequency CPU likelihood with the GPU BBHx heterodyned likelihood. Both windows use the real TDC files, the official XYZ-to-A/E preprocessing, the same frequency band, and the same local-fisher prior construction around the GPU F-statistics search result.
+
+The baseline Example 4 window (`tc - 2.5 days` to `tc + 2.5 days`) completed with `nlive=2000`, `logZ = 594014.861 +/- 0.124`, 10,890 posterior samples, and a measured sampler wall time of 9.44 minutes. The required 5-day window (`tc - 4 days` to `tc + 1 day`) completed with `logZ = 594995.406 +/- 0.125`, 10,879 posterior samples, and a measured wall time of 9.59 minutes. CUDA-enabled PyTorch was active for both runs.
+
+The auxiliary insertion-index KS p-values are 0.480 for the baseline and 0.357 for the 5-day window, and the maximum posterior boundary fractions are 0.0065 and 0.0074 respectively. These checks do not replace NESSAI's native diagnostics, but they support the conclusion that neither local posterior is obviously truncated by the Fisher box or failing the lightweight insertion-rank screen.
+
+The 5-day window narrows the chirp-mass CI90 width by about 12.3%, leaves the coalescence-time and sky-position widths nearly unchanged, and slightly widens the luminosity-distance CI90 width by about 2.9%. These are local reflected-branch posterior comparisons, not a global sky-mode comparison. The F-statistics search is centered on the ecliptic-reflected branch, so direct/reflected degeneracy should be discussed explicitly in the report.
+
+Main limitations: the heterodyned likelihood is local to its fiducial waveform, the local-fisher prior intentionally does not explore both sky-reflection modes in one run, and PSD estimates differ because the two windows use different pre-event noise segments. A rigorous direct-versus-reflected evidence comparison should run two separate local-fisher branches with their own fiducials rather than a single wide-sky heterodyned run.
 """
     ),
 ]

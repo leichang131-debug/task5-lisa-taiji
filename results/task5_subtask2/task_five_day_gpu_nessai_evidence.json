@@ -1,0 +1,15 @@
+{
+  "label": "task_five_day",
+  "log_evidence": 594995.4055283533,
+  "log_evidence_error": 0.12458670123006295,
+  "posterior_samples": 10879,
+  "wall_time_seconds": 575.3659133911133,
+  "wall_time_minutes": 9.589431889851888,
+  "seed": 1234,
+  "run_mode": "full",
+  "nlive": 2000,
+  "torch_cuda_available": true,
+  "insertion_index_ks_pvalue": 0.3566695101768089,
+  "max_boundary_fraction": 0.00735361706039158,
+  "native_diagnostic_file_count": 39
+}

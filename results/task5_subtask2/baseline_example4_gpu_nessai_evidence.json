@@ -1,0 +1,15 @@
+{
+  "label": "baseline_example4",
+  "log_evidence": 594014.8607249309,
+  "log_evidence_error": 0.12430464384507436,
+  "posterior_samples": 10890,
+  "wall_time_seconds": 566.4829037189484,
+  "wall_time_minutes": 9.441381728649139,
+  "seed": 1234,
+  "run_mode": "full",
+  "nlive": 2000,
+  "torch_cuda_available": true,
+  "insertion_index_ks_pvalue": 0.4795496614279281,
+  "max_boundary_fraction": 0.006519742883379247,
+  "native_diagnostic_file_count": 39
+}

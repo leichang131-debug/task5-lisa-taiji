@@ -1,0 +1,29 @@
+{
+  "run_mode": "full",
+  "nlive": 2000,
+  "full_nlive": 2000,
+  "pilot_nlive": 200,
+  "stopping": 0.1,
+  "seed": 1234,
+  "resume": false,
+  "plot_diagnostics": true,
+  "likelihood_chunksize": 512,
+  "prior_sigma": 8.0,
+  "sky_prior_mode": "local_fisher",
+  "local_max_half_widths": {
+    "coalescence_phase": 0.5,
+    "inclination": 0.25,
+    "longitude": 0.5,
+    "latitude": 0.5,
+    "psi": 0.5
+  },
+  "boundary_relative_tolerance": 0.02,
+  "boundary_warning_fraction": 0.05,
+  "torch_available": true,
+  "torch_cuda_available": true,
+  "torch_version": "2.5.1+cu124",
+  "torch_cuda_version": "12.4",
+  "prior_coordinate_space": "Triangle-BBH internal ParamDict2ParamArr coordinates",
+  "sampler": "nessai.FlowSampler",
+  "likelihood": "Triangle_BBH GPU heterodyned het_log_like_vectorized"
+}

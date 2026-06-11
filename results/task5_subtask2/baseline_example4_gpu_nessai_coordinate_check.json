@@ -1,0 +1,27 @@
+{
+  "label": "baseline_example4",
+  "coordinate_space": "Triangle-BBH internal ParamDict2ParamArr coordinates",
+  "prior_space": "uniform in internal coordinates; log parameters imply Jeffreys-like physical priors for chirp mass and luminosity distance",
+  "searched_internal_log_likelihood": 594050.824922428,
+  "searched_physical_raw_log_likelihood": null,
+  "searched_physical_raw_check": "skipped intentionally: raw physical-order parameters are not valid Triangle-BBH internal coordinates and can trigger native BBHx CUDA errors",
+  "physical_raw_within_internal_bounds": {
+    "log_chirp_mass": false,
+    "mass_ratio": true,
+    "spin_1z": true,
+    "spin_2z": true,
+    "coalescence_time": true,
+    "coalescence_phase": true,
+    "log_luminosity_distance": false,
+    "cos_inclination": false,
+    "longitude": true,
+    "sin_latitude": true,
+    "psi": true
+  },
+  "injection_internal_log_likelihood": -Infinity,
+  "preflight_log_likelihood_at_injection": -383859.58977194433,
+  "injection_minus_preflight": -Infinity,
+  "physical_raw_minus_internal": null,
+  "max_roundtrip_abs_error": 2.1827872842550278e-11,
+  "passes_roundtrip": true
+}

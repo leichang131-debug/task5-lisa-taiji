@@ -1,0 +1,9 @@
+{
+  "label": "task_five_day",
+  "batch_size": 2048,
+  "elapsed_seconds": 0.2597827911376953,
+  "points_per_second": 7883.509107862644,
+  "finite_fraction": 1.0,
+  "vectorised_likelihood": true,
+  "likelihood_chunksize": 512
+}

@@ -1,0 +1,9 @@
+{
+  "label": "task_five_day",
+  "boundary_kind": "Fisher-centred sampling box used by this NESSAI run, not the global physical hard bounds",
+  "relative_tolerance": 0.02,
+  "warning_fraction": 0.05,
+  "warning_parameters": [],
+  "max_boundary_fraction": 0.00735361706039158,
+  "diagnostic_note": "If full-run posterior mass accumulates near a Fisher-box boundary, widen or recenter that prior before interpreting credible intervals."
+}

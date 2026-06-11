@@ -29,6 +29,8 @@ dependencies:
   - openblas
   - pip
   - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu124
+      - torch==2.5.1+cu124
       - bilby==1.0.0
       - dynesty==1.0.1
       - emcee>=3.1
