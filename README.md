@@ -166,8 +166,8 @@ Current subtask 2 outputs:
 - [Task 5-day frequency-domain data and PSD](figures/task5_subtask2/06_five_day_frequency_psd.png)
 - [Task 5-day direct reconstruction](figures/task5_subtask2/07_five_day_reconstruction_direct.png)
 - [Task 5-day reflected reconstruction](figures/task5_subtask2/08_five_day_reconstruction_reflected.png)
-- [Baseline Taiji-frame sky check](figures/task5_subtask2/09_baseline_taiji_frame_sky.png)
-- [Task 5-day Taiji-frame sky check](figures/task5_subtask2/10_five_day_taiji_frame_sky.png)
+- [Baseline GPU NESSAI Taiji-frame posterior position](figures/task5_subtask2/09_baseline_taiji_frame_sky.png)
+- [Task 5-day GPU NESSAI Taiji-frame posterior position](figures/task5_subtask2/10_five_day_taiji_frame_sky.png)
 
 Current quantitative summaries:
 
@@ -200,6 +200,8 @@ Current quantitative summaries:
 - [Task 5-day NESSAI insertion-index diagnostic](figures/task5_subtask2/14_five_day_nessai_insertion_indices.png)
 - [Task 5-day NESSAI trace](figures/task5_subtask2/15_five_day_nessai_trace.png)
 - [Task 5-day NESSAI logX-logL](figures/task5_subtask2/16_five_day_nessai_logXlogL.png)
+- [Baseline GPU NESSAI posterior distribution corner](figures/task5_subtask2/17_baseline_gpu_nessai_corner.png)
+- [Task 5-day GPU NESSAI posterior distribution corner](figures/task5_subtask2/18_five_day_gpu_nessai_corner.png)
 
 Subtask 2 interpretation:
 
@@ -213,7 +215,7 @@ The previous Windows-local posterior run used `bilby==1.0.0` with `dynesty==1.0.
 
 The full GPU-heterodyned NESSAI run completed on the WSL2 RTX 4060 setup with CUDA-enabled PyTorch. For the symmetric Example 4 baseline window, the run used `nlive=2000`, produced 10,890 posterior samples, and measured `logZ = 594014.861 +/- 0.124` in 9.44 minutes. The auxiliary insertion-index KS p-value is 0.480 and the maximum posterior boundary fraction is 0.0065. For the required asymmetric 5-day window, the run produced 10,879 posterior samples and measured `logZ = 594995.406 +/- 0.125` in 9.59 minutes. The auxiliary insertion-index KS p-value is 0.357 and the maximum posterior boundary fraction is 0.0074. Both windows therefore pass the lightweight KS and boundary-contact screens; the notebook also stores NESSAI's native insertion-index, trace, and logX-logL diagnostic figures.
 
-The GPU NESSAI posterior comparison shows similar local-Fisher posterior widths for most parameters. The 5-day window gives a narrower chirp-mass CI90 width by about 12.3% (`8172.6 Msun` to `7169.5 Msun`), nearly unchanged coalescence-time and sky widths, and a slightly wider luminosity-distance CI90 width by about 2.9%. These statements should be interpreted as local-reflected-branch results because the F-statistics search and heterodyned fiducial are centered on the reflected sky branch; the direct/reflected degeneracy and PSD-window differences remain part of the scientific discussion in notebook section 22.
+The GPU NESSAI posterior comparison shows similar local-Fisher posterior widths for most parameters. The 5-day window gives a narrower chirp-mass CI90 width by about 12.3% (`8172.6 Msun` to `7169.5 Msun`), nearly unchanged coalescence-time and sky widths, and a slightly wider luminosity-distance CI90 width by about 2.9%. These statements should be interpreted as local-reflected-branch results because the F-statistics search and heterodyned fiducial are centered on the reflected sky branch; the direct/reflected degeneracy and PSD-window differences remain part of the scientific discussion in notebook section 23.
 
 ## Environment
 

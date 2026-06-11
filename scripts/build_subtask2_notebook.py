@@ -223,6 +223,7 @@ print("FISHER_PRIOR_SIGMA:", FISHER_PRIOR_SIGMA)
     code(
         r"""
 import bilby
+import corner
 import h5py
 import matplotlib
 import matplotlib.pyplot as plt
@@ -875,10 +876,12 @@ manifest = {
     "baseline_frequency_psd": "figures/task5_subtask2/02_baseline_frequency_psd.png",
     "baseline_reconstruction_direct": "figures/task5_subtask2/03_baseline_reconstruction_direct.png",
     "baseline_reconstruction_reflected": "figures/task5_subtask2/04_baseline_reconstruction_reflected.png",
+    "baseline_gpu_nessai_corner": "figures/task5_subtask2/17_baseline_gpu_nessai_corner.png",
     "five_day_timeseries": "figures/task5_subtask2/05_five_day_timeseries.png",
     "five_day_frequency_psd": "figures/task5_subtask2/06_five_day_frequency_psd.png",
     "five_day_reconstruction_direct": "figures/task5_subtask2/07_five_day_reconstruction_direct.png",
     "five_day_reconstruction_reflected": "figures/task5_subtask2/08_five_day_reconstruction_reflected.png",
+    "five_day_gpu_nessai_corner": "figures/task5_subtask2/18_five_day_gpu_nessai_corner.png",
     "baseline_taiji_frame_sky": "figures/task5_subtask2/09_baseline_taiji_frame_sky.png",
     "five_day_taiji_frame_sky": "figures/task5_subtask2/10_five_day_taiji_frame_sky.png",
     "comparison_table": "results/task5_subtask2/baseline_vs_five_day_parameter_summary.csv",
@@ -1462,6 +1465,13 @@ def structured_samples_to_physical_dataframe(samples) -> pd.DataFrame:
         rows.append(ParamArr2ParamDict(arr))
     return pd.DataFrame(rows)
 
+def load_gpu_nessai_posterior_samples(label: str) -> pd.DataFrame | None:
+    path = RESULT_DIR / f"{label}_gpu_nessai_posterior_samples.csv"
+    if not path.exists():
+        print(f"GPU NESSAI posterior samples not found: {path.relative_to(REPO_ROOT)}")
+        return None
+    return pd.read_csv(path)
+
 def run_gpu_nessai_coordinate_check(model: TaijiGPUHeterodynedNESSAIModel, gpu_search: dict, label: str) -> dict:
     searched_internal = physical_to_internal_array(gpu_search["searched_parameters"])
     searched_structured = internal_array_to_structured(searched_internal)
@@ -1904,9 +1914,106 @@ if baseline_gpu_summary is not None and five_day_gpu_summary is not None:
 display(gpu_comparison)
 """
     ),
+    md("## 21. Official-Style GPU NESSAI Posterior Distribution and Taiji-Frame Position"),
+    code(
+        r"""
+GPU_NESSAI_CORNER_PARAMETERS = [
+    "chirp_mass",
+    "mass_ratio",
+    "spin_1z",
+    "spin_2z",
+    "coalescence_time",
+    "coalescence_phase",
+    "luminosity_distance",
+    "inclination",
+    "longitude",
+    "latitude",
+    "psi",
+]
+GPU_NESSAI_CORNER_LABELS = [
+    "Mc",
+    "q",
+    "chi_z1",
+    "chi_z2",
+    "tc",
+    "phi_c",
+    "dL",
+    "iota",
+    "lambda",
+    "beta",
+    "psi",
+]
+
+def plot_gpu_nessai_corner(samples: pd.DataFrame, label: str, filename: str) -> None:
+    missing = [p for p in GPU_NESSAI_CORNER_PARAMETERS if p not in samples.columns]
+    if missing:
+        print(f"Corner plot skipped for {label}; missing columns: {missing}")
+        return
+    data = samples[GPU_NESSAI_CORNER_PARAMETERS].to_numpy(dtype=float)
+    truths = [float(injected_parameters[p]) for p in GPU_NESSAI_CORNER_PARAMETERS]
+    fig = corner.corner(
+        data,
+        labels=GPU_NESSAI_CORNER_LABELS,
+        truths=truths,
+        show_titles=True,
+        title_fmt=".3g",
+        quantiles=[0.05, 0.5, 0.95],
+        levels=(0.5, 0.9),
+        bins=40,
+        smooth=1.0,
+        plot_datapoints=False,
+        fill_contours=True,
+        color=BLUE,
+        truth_color=ORANGE,
+        max_n_ticks=3,
+    )
+    fig.suptitle(label, y=0.995)
+    save_current_figure(filename)
+    plt.show()
+
+def plot_gpu_nessai_taiji_frame_position(samples: pd.DataFrame, label: str, filename: str) -> None:
+    needed = ["longitude", "latitude", "psi"]
+    missing = [p for p in needed if p not in samples.columns]
+    if missing:
+        print(f"Taiji-frame position plot skipped for {label}; missing columns: {missing}")
+        return
+    num_sample = len(samples)
+    longitude_TJ = np.zeros(num_sample)
+    latitude_TJ = np.zeros(num_sample)
+    orbit_time = float(injected_parameters["coalescence_time"]) * DAY
+    for i, row in enumerate(samples[needed].itertuples(index=False)):
+        lon, lat, _ = SSBPosToDetectorFrame(
+            lon_ssb=float(row.longitude),
+            lat_ssb=float(row.latitude),
+            psi_ssb=float(row.psi),
+            orbit_time_SI=orbit_time,
+            orbit=orbit,
+        )
+        longitude_TJ[i] = lon % TWOPI
+        latitude_TJ[i] = lat
+    plt.figure(figsize=(7.0, 5.0))
+    plt.hist2d(x=longitude_TJ, y=latitude_TJ, bins=50, cmap="viridis")
+    plt.colorbar(label="posterior samples")
+    plt.xlabel("longitude (rad)")
+    plt.ylabel("latitude (rad)")
+    plt.title(label)
+    save_current_figure(filename)
+    plt.show()
+
+baseline_gpu_nessai_samples = load_gpu_nessai_posterior_samples("baseline_example4")
+five_day_gpu_nessai_samples = load_gpu_nessai_posterior_samples("task_five_day")
+
+if baseline_gpu_nessai_samples is not None:
+    plot_gpu_nessai_corner(baseline_gpu_nessai_samples, "baseline GPU NESSAI posterior distribution", "17_baseline_gpu_nessai_corner.png")
+    plot_gpu_nessai_taiji_frame_position(baseline_gpu_nessai_samples, "baseline GPU NESSAI position in Taiji frame", "09_baseline_taiji_frame_sky.png")
+if five_day_gpu_nessai_samples is not None:
+    plot_gpu_nessai_corner(five_day_gpu_nessai_samples, "5-day GPU NESSAI posterior distribution", "18_five_day_gpu_nessai_corner.png")
+    plot_gpu_nessai_taiji_frame_position(five_day_gpu_nessai_samples, "5-day GPU NESSAI position in Taiji frame", "10_five_day_taiji_frame_sky.png")
+"""
+    ),
     md(
         """
-## 21. Full GPU-Heterodyned NESSAI Diagnostics
+## 22. Full GPU-Heterodyned NESSAI Diagnostics
 
 The full GPU-heterodyned NESSAI runs completed with `nlive=2000`, `stopping=0.1`, `seed=1234`, and CUDA-enabled PyTorch. The compact JSON/CSV outputs are tracked under `results/task5_subtask2/`; the native heavy sampler directories remain local outputs.
 
@@ -1929,7 +2036,7 @@ The full GPU-heterodyned NESSAI runs completed with `nlive=2000`, `stopping=0.1`
     ),
     md(
         """
-## 22. Final Discussion Notes
+## 23. Final Discussion Notes
 
 The full production route follows the task requirement to use NESSAI nested sampling while replacing the slow full-frequency CPU likelihood with the GPU BBHx heterodyned likelihood. Both windows use the real TDC files, the official XYZ-to-A/E preprocessing, the same frequency band, and the same local-fisher prior construction around the GPU F-statistics search result.
 
