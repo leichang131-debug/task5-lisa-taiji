@@ -1944,7 +1944,28 @@ GPU_NESSAI_CORNER_LABELS = [
     "psi",
 ]
 
-def plot_gpu_nessai_corner(samples: pd.DataFrame, label: str, filename: str) -> None:
+def reflected_injection_reference() -> dict[str, float] | None:
+    if orbit is None:
+        print("Reflected injection reference skipped because orbit is unavailable.")
+        return None
+    try:
+        reflected = get_reflected_parameter_dict(searched_params=injected_parameters, orbit=orbit)
+    except Exception as exc:
+        print(f"Reflected injection reference skipped: {exc}")
+        return None
+    return {k: float(v) for k, v in reflected.items()}
+
+def overplot_corner_reference(fig, values: dict[str, float], *, color: str, linestyle: str, linewidth: float = 1.15) -> None:
+    ndim = len(GPU_NESSAI_CORNER_PARAMETERS)
+    axes = np.asarray(fig.axes).reshape((ndim, ndim))
+    reference = [float(values[p]) for p in GPU_NESSAI_CORNER_PARAMETERS]
+    for i in range(ndim):
+        axes[i, i].axvline(reference[i], color=color, linestyle=linestyle, lw=linewidth)
+        for j in range(i):
+            axes[i, j].axvline(reference[j], color=color, linestyle=linestyle, lw=linewidth)
+            axes[i, j].axhline(reference[i], color=color, linestyle=linestyle, lw=linewidth)
+
+def plot_gpu_nessai_corner(samples: pd.DataFrame, label: str, filename: str, reflected_reference: dict[str, float] | None = None) -> None:
     missing = [p for p in GPU_NESSAI_CORNER_PARAMETERS if p not in samples.columns]
     if missing:
         print(f"Corner plot skipped for {label}; missing columns: {missing}")
@@ -1967,7 +1988,10 @@ def plot_gpu_nessai_corner(samples: pd.DataFrame, label: str, filename: str) -> 
         truth_color=ORANGE,
         max_n_ticks=3,
     )
+    if reflected_reference is not None:
+        overplot_corner_reference(fig, reflected_reference, color=RED, linestyle="--")
     fig.suptitle(label, y=0.995)
+    fig.text(0.58, 0.965, "orange: direct injection; red dashed: reflected injection", color="0.25", fontsize=10)
     save_current_figure(filename)
     plt.show()
 
@@ -2002,12 +2026,15 @@ def plot_gpu_nessai_taiji_frame_position(samples: pd.DataFrame, label: str, file
 
 baseline_gpu_nessai_samples = load_gpu_nessai_posterior_samples("baseline_example4")
 five_day_gpu_nessai_samples = load_gpu_nessai_posterior_samples("task_five_day")
+reflected_injection = reflected_injection_reference()
+if reflected_injection is not None:
+    print("Reflected injection reference:", {k: reflected_injection[k] for k in ["inclination", "longitude", "latitude", "psi"]})
 
 if baseline_gpu_nessai_samples is not None:
-    plot_gpu_nessai_corner(baseline_gpu_nessai_samples, "baseline GPU NESSAI posterior distribution", "17_baseline_gpu_nessai_corner.png")
+    plot_gpu_nessai_corner(baseline_gpu_nessai_samples, "baseline GPU NESSAI posterior distribution", "17_baseline_gpu_nessai_corner.png", reflected_injection)
     plot_gpu_nessai_taiji_frame_position(baseline_gpu_nessai_samples, "baseline GPU NESSAI position in Taiji frame", "09_baseline_taiji_frame_sky.png")
 if five_day_gpu_nessai_samples is not None:
-    plot_gpu_nessai_corner(five_day_gpu_nessai_samples, "5-day GPU NESSAI posterior distribution", "18_five_day_gpu_nessai_corner.png")
+    plot_gpu_nessai_corner(five_day_gpu_nessai_samples, "5-day GPU NESSAI posterior distribution", "18_five_day_gpu_nessai_corner.png", reflected_injection)
     plot_gpu_nessai_taiji_frame_position(five_day_gpu_nessai_samples, "5-day GPU NESSAI position in Taiji frame", "10_five_day_taiji_frame_sky.png")
 """
     ),
@@ -2040,11 +2067,11 @@ The full GPU-heterodyned NESSAI runs completed with `nlive=2000`, `stopping=0.1`
 
 The full production route follows the task requirement to use NESSAI nested sampling while replacing the slow full-frequency CPU likelihood with the GPU BBHx heterodyned likelihood. Both windows use the real TDC files, the official XYZ-to-A/E preprocessing, the same frequency band, and the same local-fisher prior construction around the GPU F-statistics search result.
 
-The baseline Example 4 window (`tc - 2.5 days` to `tc + 2.5 days`) completed with `nlive=2000`, `logZ = 594014.861 +/- 0.124`, 10,890 posterior samples, and a measured sampler wall time of 9.44 minutes. The required 5-day window (`tc - 4 days` to `tc + 1 day`) completed with `logZ = 594995.406 +/- 0.125`, 10,879 posterior samples, and a measured wall time of 9.59 minutes. CUDA-enabled PyTorch was active for both runs.
+The baseline Example 4 window (`tc - 2.5 days` to `tc + 2.5 days`) completed with `nlive=2000`, `logZ = 594014.861 +/- 0.124`, 10,890 posterior samples, and a measured sampler wall time of 9.44 minutes. The required 5-day window (`tc - 4 days` to `tc + 1 day`) completed with `logZ = 594995.406 +/- 0.125`, 10,879 posterior samples, and a measured wall time of 9.59 minutes. CUDA-enabled PyTorch was active for both runs. The two `logZ` values are reported as per-run NESSAI evidence/convergence diagnostics only; their difference must not be interpreted as a Bayes factor or as Bayesian evidence favoring the 5-day data window because the two runs use different data segments.
 
 The auxiliary insertion-index KS p-values are 0.480 for the baseline and 0.357 for the 5-day window, and the maximum posterior boundary fractions are 0.0065 and 0.0074 respectively. These checks do not replace NESSAI's native diagnostics, but they support the conclusion that neither local posterior is obviously truncated by the Fisher box or failing the lightweight insertion-rank screen.
 
-The 5-day window narrows the chirp-mass CI90 width by about 12.3%, leaves the coalescence-time and sky-position widths nearly unchanged, and slightly widens the luminosity-distance CI90 width by about 2.9%. These are local reflected-branch posterior comparisons, not a global sky-mode comparison. The F-statistics search is centered on the ecliptic-reflected branch, so direct/reflected degeneracy should be discussed explicitly in the report.
+The 5-day window narrows the chirp-mass CI90 width by about 12.3%, leaves the coalescence-time and sky-position widths nearly unchanged, and slightly widens the luminosity-distance CI90 width by about 2.9%. These are local reflected-branch posterior comparisons, not a global sky-mode comparison. The F-statistics search is centered on the ecliptic-reflected branch; the corner plots therefore show orange solid lines for the direct injected parameters and red dashed lines for the reflected injection reference generated with `get_reflected_parameter_dict`. The report should discuss this direct/reflected degeneracy explicitly.
 
 Main limitations: the heterodyned likelihood is local to its fiducial waveform, the local-fisher prior intentionally does not explore both sky-reflection modes in one run, and PSD estimates differ because the two windows use different pre-event noise segments. A rigorous direct-versus-reflected evidence comparison should run two separate local-fisher branches with their own fiducials rather than a single wide-sky heterodyned run.
 """
