@@ -2,19 +2,19 @@ name: tri_env
 channels:
   - conda-forge
 dependencies:
-  - python=3.9
-  - numpy
-  - scipy
-  - matplotlib
-  - h5py
-  - pandas
-  - jupyter
-  - notebook
-  - ipykernel
-  - tqdm
-  - corner
-  - cython
-  - gsl
+  - python=3.9.19
+  - numpy=1.26.4
+  - scipy=1.13.1
+  - matplotlib=3.9.4
+  - h5py=3.13.0
+  - pandas=2.2.2
+  - jupyter=1.1.1
+  - notebook=7.4.5
+  - ipykernel=6.30.1
+  - tqdm=4.67.1
+  - corner=2.2.3
+  - cython=3.1.3
+  - gsl=2.7
   - gcc_linux-64=12
   - gxx_linux-64=12
   - cuda-version=12.6
@@ -31,12 +31,13 @@ dependencies:
   - pip:
       - --extra-index-url https://download.pytorch.org/whl/cu124
       - torch==2.5.1+cu124
-      - bilby==1.0.0
-      - dynesty==1.0.1
-      - emcee>=3.1
-      - eryn>=1.2
-      - nessai>=0.15
-      - cupy-cuda12x>=13.0
-      - healpy>=1.17
-      - pycbc>=2.6
+      - bilby==2.3.0
+      - dynesty==2.1.5
+      - emcee==3.1.6
+      - eryn==1.2.5
+      - nessai==0.14.0.post0
+      - cupy-cuda12x==13.6.0
+      - healpy==1.17.3
+      - pycbc==2.7.2
+      - bbhx==1.0.5
       - git+https://github.com/XGI-MSU/WDMWaveletTransforms.git

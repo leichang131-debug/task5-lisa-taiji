@@ -261,6 +261,9 @@ if not hasattr(np, "float"):
     np.float = float
 
 matplotlib.rcParams["text.usetex"] = False
+BLUE = "#1f77b4"
+ORANGE = "#ff7f0e"
+RED = "#d62728"
 
 from Triangle.Constants import *
 from Triangle.Orbit import *
@@ -2071,9 +2074,9 @@ The baseline Example 4 window (`tc - 2.5 days` to `tc + 2.5 days`) completed wit
 
 The auxiliary insertion-index KS p-values are 0.480 for the baseline and 0.357 for the 5-day window, and the maximum posterior boundary fractions are 0.0065 and 0.0074 respectively. These checks do not replace NESSAI's native diagnostics, but they support the conclusion that neither local posterior is obviously truncated by the Fisher box or failing the lightweight insertion-rank screen.
 
-The 5-day window narrows the chirp-mass CI90 width by about 12.3%, leaves the coalescence-time and sky-position widths nearly unchanged, and slightly widens the luminosity-distance CI90 width by about 2.9%. These are local reflected-branch posterior comparisons, not a global sky-mode comparison. The F-statistics search is centered on the ecliptic-reflected branch; the corner plots therefore show orange solid lines for the direct injected parameters and red dashed lines for the reflected injection reference generated with `get_reflected_parameter_dict`. The report should discuss this direct/reflected degeneracy explicitly.
+The 5-day window narrows the chirp-mass CI90 width by about 12.3%, leaves the coalescence-time and sky-position widths nearly unchanged, and slightly widens the luminosity-distance CI90 width by about 2.9%. These are local reflected-branch posterior comparisons, not a global sky-mode comparison. The F-statistics search is centered on the ecliptic-reflected branch; the corner plots therefore show orange solid lines for the direct injected parameters and red dashed lines for the reflected injection reference generated with `get_reflected_parameter_dict`. The luminosity-distance posterior is mildly skewed toward lower distance, consistent with the usual MBHB distance-inclination degeneracy; it is not treated as Fisher-box truncation because the maximum posterior boundary fraction is below 1%. The report should discuss this direct/reflected degeneracy explicitly.
 
-Main limitations: the heterodyned likelihood is local to its fiducial waveform, the local-fisher prior intentionally does not explore both sky-reflection modes in one run, and PSD estimates differ because the two windows use different pre-event noise segments. A rigorous direct-versus-reflected evidence comparison should run two separate local-fisher branches with their own fiducials rather than a single wide-sky heterodyned run.
+Main limitations: the heterodyned likelihood is local to its fiducial waveform, the local-fisher prior intentionally does not explore both sky-reflection modes in one run, PSD estimates differ because the two windows use different pre-event noise segments, and a single TDC injection cannot provide a population P-P calibration test. A rigorous direct-versus-reflected evidence comparison should run two separate local-fisher branches with their own fiducials rather than a single wide-sky heterodyned run; that direct-branch run is a clean optional extension, not a requirement for the current submission.
 """
     ),
 ]
