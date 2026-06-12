@@ -11,20 +11,41 @@ UCAS 2026 Innovation Practice Task 5: LISA Data Challenge time-frequency visuali
 
 ```text
 task5-lisa-taiji/
++-- .gitignore
 +-- README.md
++-- LICENSE
 +-- environment.yml
++-- environment-wsl-gpu.yml
 +-- requirements.txt
++-- docs/
+|   +-- README.md
+|   +-- subtask2_example4_understanding.tex
+|   +-- subtask2_example4_understanding.pdf
 +-- notebooks/
 |   +-- 01_ldc_time_frequency_visualization.ipynb
 |   +-- 02_taiji_mbhb_parameter_estimation.ipynb
++-- scripts/
+|   +-- build_subtask2_notebook.py
+|   +-- gpu_nessai_vectorized_interface_check.py
+|   +-- gpu_subtask2_benchmark.py
+|   +-- gpu_subtask2_preflight.py
+|   +-- run_notebook2_full_wsl.sh
+|   +-- run_subtask2_gpu_notebook_wsl.sh
+|   +-- setup_wsl_cuda_home.sh
 +-- src/
 |   +-- __init__.py
 |   +-- data_utils.py
 |   +-- plotting.py
 |   +-- frft_utils.py
 +-- figures/
-    +-- task5_subtask1/
+|   +-- task5_subtask1/
+|   +-- task5_subtask2/
++-- results/
     +-- task5_subtask2/
+        +-- *_evidence.json
+        +-- *_posterior_summary.csv
+        +-- *_posterior_samples.csv
+        +-- *_diagnostics.json
 ```
 
 ## Data
