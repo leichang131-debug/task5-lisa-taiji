@@ -21,6 +21,9 @@ task5-lisa-taiji/
 |   +-- README.md
 |   +-- subtask2_example4_understanding.tex
 |   +-- subtask2_example4_understanding.pdf
+|   +-- task5_mentor_presentation_report.tex
+|   +-- task5_mentor_presentation_report.pdf
+|   +-- report_assets/
 +-- notebooks/
 |   +-- 01_ldc_time_frequency_visualization.ipynb
 |   +-- 02_taiji_mbhb_parameter_estimation.ipynb

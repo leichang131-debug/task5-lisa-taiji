@@ -1,0 +1,739 @@
+\documentclass[11pt,a4paper]{ctexart}
+
+\usepackage[margin=2.0cm]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{xurl}
+\usepackage{longtable}
+\usepackage{multirow}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!55!black,
+  citecolor=blue!55!black,
+  urlcolor=blue!55!black
+}
+
+\setlist[itemize]{leftmargin=1.7em}
+\setlist[enumerate]{leftmargin=1.7em}
+\captionsetup{font=small}
+\emergencystretch=3em
+\Urlmuskip=0mu plus 2mu
+
+\newcommand{\repo}{\href{https://github.com/leichang131-debug/task5-lisa-taiji}{task5-lisa-taiji}}
+\newcommand{\official}{\href{https://github.com/TriangleDataCenter/Triangle-BBH}{Triangle-BBH}}
+\newcommand{\figsubone}{../figures/task5_subtask1}
+\newcommand{\figsubtwo}{../figures/task5_subtask2}
+\newcommand{\asset}{report_assets}
+
+\title{\bfseries 中国科学院大学 2026 年科创计划任务五汇报材料\\
+\large LISA/Taiji Data Challenge：时频可视化与大质量双黑洞参数估计}
+\author{雷畅\\代码仓库：\repo}
+\date{2026 年 6 月}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本汇报材料面向约一小时导师汇报，系统梳理任务五两个子任务的科学背景、实现路线、
+主要结果、代码仓库结构和创新点。子任务一围绕 LISA Data Challenge 的 HDF5/TDI 数据，
+完成时域、频域、Wilson--Daubechies--Meyer (WDM) 小波和分数阶傅立叶变换 (FRFT) 可视化；
+子任务二参考官方 \official{} Example 4，在 Taiji Data Challenge II 大质量双黑洞
+(massive black hole binary, MBHB) 数据上完成 baseline 与任务要求的 5-day 窗口参数估计。
+在保持 NESSAI 嵌套采样这一任务要求的前提下，本仓库将官方 Example 4 的 CPU/全频似然
+路线扩展为 GPU 杂频似然 (heterodyned likelihood) + 向量化 NESSAI 的工作流，使两个 full
+NESSAI 采样窗口分别在约 9.5 分钟内完成，并配套坐标自检、插入秩诊断、边界检查和可复现
+环境记录。本文档特别补充官方 Example 4 的 posterior distribution 与 Taiji frame sky-position
+输出图，并与本仓库结果进行逐项比较，说明本工作继承了官方示例的科学流程，同时通过
+GPU 化、诊断化和文档化提高了可运行性和可交付性。
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{汇报目标与建议讲述节奏}
+
+本次汇报的核心目标不是逐行解释代码，而是说明三件事：
+\begin{enumerate}
+  \item 我理解任务五为什么这样设计：子任务一解决“信号在哪里、时频形态是什么”，
+  子任务二解决“信号对应什么物理参数、后验不确定性有多大”。
+  \item 我不仅复现了官方流程，还把官方 Example 4 的初步示例扩展为可复现、可诊断、
+  可汇报的完整工作流。
+  \item 我清楚当前结果的科学边界：局部反射支后验、跨窗口 \(\log Z\) 不作 Bayes factor、
+  单注入不能做 population P--P 检验。
+\end{enumerate}
+
+\begin{table}[H]
+\centering
+\caption{建议的一小时汇报时间分配。}
+\begin{tabular}{p{0.34\linewidth}p{0.14\linewidth}p{0.42\linewidth}}
+\toprule
+模块 & 时间 & 汇报重点 \\
+\midrule
+项目背景与任务目标 & 5 min & LISA/Taiji、TDI、MBHB、两个子任务之间的关系 \\
+子任务一：LDC 时频可视化 & 12 min & HDF5 读取、NaN 处理、WDM、FRFT、定量 sanity checks \\
+子任务二：Taiji MBHB 参数估计 & 25 min & Example 4、TDI/FFT/PSD、F-stat 搜索、Fisher 先验、NESSAI 采样 \\
+官方结果与本仓库结果对比 & 8 min & posterior distribution、Taiji frame、CPU 路线与 GPU 路线差别 \\
+创新点、不足与后续工作 & 10 min & GPU 杂频似然、诊断体系、direct/reflected branch、wide-sky 与多注入扩展 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{项目背景：从空间引力波数据到 MBHB 参数估计}
+
+LISA 和 Taiji 属于空间引力波探测器，目标频段主要在 mHz 附近，适合探测大质量双黑洞并合、
+极端质量比旋近、银河系双白矮星等长时标信号。与地面探测器不同，空间探测器由多个航天器
+组成，原始激光链路需要通过时间延迟干涉 (time-delay interferometry, TDI) 构造出有效数据
+通道。对本任务而言，两个子任务形成一条自然分析链：
+\[
+\text{HDF5/TDI 数据读取}
+\rightarrow
+\text{时域与频域诊断}
+\rightarrow
+\text{时频变换显示信号结构}
+\rightarrow
+\text{频域似然与贝叶斯参数估计}.
+\]
+
+子任务一偏向数据理解和信号可视化，要求把 HDF5 文件中可能含 NaN 的 TDI 数据清洗后，
+用 WDM 和 FRFT 展现信号结构；子任务二偏向物理参数恢复，要求参考官方 \official{} Example 4，
+理解空间引力波数据形式、傅立叶变换、MBHB 波形和贝叶斯统计推断，并把参数估计数据窗口
+扩展为合并前 4 天、合并后 1 天。
+
+\section{代码仓库与可复现工作流}
+
+本项目仓库为 \repo{}。当前仓库不是单一 notebook，而是把数据分析所需的代码、图像、
+结果、环境和文档分层保存。
+
+\begin{verbatim}
+task5-lisa-taiji/
++-- environment.yml                 # 轻量 conda 环境
++-- environment-wsl-gpu.yml         # WSL2 GPU/NVIDIA/CUDA 环境记录
++-- notebooks/
+|   +-- 01_ldc_time_frequency_visualization.ipynb
+|   +-- 02_taiji_mbhb_parameter_estimation.ipynb
++-- src/
+|   +-- data_utils.py
+|   +-- plotting.py
+|   +-- frft_utils.py
++-- scripts/
+|   +-- gpu_subtask2_preflight.py
+|   +-- gpu_nessai_vectorized_interface_check.py
+|   +-- gpu_subtask2_benchmark.py
+|   +-- run_notebook2_full_wsl.sh
++-- figures/
+|   +-- task5_subtask1/
+|   +-- task5_subtask2/
++-- results/
+|   +-- task5_subtask2/
++-- docs/
+    +-- subtask2_example4_understanding.pdf
+    +-- task5_mentor_presentation_report.pdf
+\end{verbatim}
+
+这种结构对应一套可复现工作流：notebook 是主实验记录，\texttt{src/} 是通用工具，
+\texttt{scripts/} 是环境和批运行入口，\texttt{figures/} 和 \texttt{results/} 保存可检查产物，
+\texttt{docs/} 保存面向导师或评审的解释文档。
+
+\section{子任务一：LDC 时频变换与可视化}
+
+\subsection{数据流与关键预处理}
+
+子任务一使用真实 LDC HDF5 文件 \texttt{LDC2\_spritz\_mbhb1\_training\_v1.h5}。
+主分析数据为 \texttt{obs/tdi}，\texttt{sky/tdi} 仅作为 signal-only 参考。任务要求 NaN 置零，
+实际检查中 \(X,Y,Z\) 三个 TDI 通道的 NaN 数均为 10080，采样间隔为 \(dt=5\,\mathrm{s}\)。
+
+分析流程为：
+\[
+\text{HDF5 读取}
+\rightarrow
+\text{NaN 置零}
+\rightarrow
+X,Y,Z \rightarrow A/E/T
+\rightarrow
+\text{时域/频域诊断}
+\rightarrow
+\text{WDM 与 FRFT}
+\rightarrow
+\text{定量 sanity checks}.
+\]
+
+\subsection{时域和频域诊断}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubone/01_obs_and_sky_a_timeseries_relative_to_tc.png}
+\caption{并合附近 A-like 通道时域数据}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubone/02_obs_a_frequency_diagnostic.png}
+\caption{观测流频域诊断}
+\end{subfigure}
+\caption{子任务一的基础数据检查。左图用于确认 coalescence 附近的时域结构，右图用于确认主要能量频段和噪声背景。}
+\end{figure}
+
+这一步的意义是确认数据路径、通道选择、采样间隔和窗口定位没有错误。频域图不是最终结果，
+但它决定后续 WDM 和 FRFT 的参数选择是否合理。
+
+\subsection{WDM 小波变换：定位并合附近低频能量增强}
+
+WDM 小波适合描述非平稳 chirp 信号在时间--频率平面中的能量演化。本项目比较不同频率分辨率
+\(N_f=256,512,1024\)，并用 \texttt{sky/tdi} 作为参考信号定位。
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.32\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubone/04_wdm_obs_a_nfreq_256.png}
+\caption{\(N_f=256\)}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.32\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubone/04_wdm_obs_a_nfreq_512.png}
+\caption{\(N_f=512\)}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.32\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubone/04_wdm_obs_a_nfreq_1024.png}
+\caption{\(N_f=1024\)}
+\end{subfigure}
+\caption{观测 TDI A-like 通道的 WDM 时频图。不同 \(N_f\) 展示时间与频率分辨率的折中。}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.72\linewidth]{\figsubone/04_wdm_sky_reference_nfreq_512.png}
+\caption{\texttt{sky/tdi} reference 的 WDM 图，用作 signal-only 位置参照。}
+\end{figure}
+
+定量检查显示，WDM 低频 coalescence/background 平均能量比为 20.58，低频峰值时间相对合并时刻
+约为 0.035 days。这说明时频图中的增强不是视觉错觉，而是有定量能量对比支撑。
+
+\subsection{FRFT：chirp 信号的补充投影视角}
+
+分数阶傅立叶变换 (FRFT) 可以视为在时频平面中旋转坐标轴。对于 chirp 类信号，某些分数阶
+\(\alpha\) 下能量会更集中，因此 FRFT 可作为 WDM 之外的补充诊断。
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.46\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubone/05_frft_obs_input_segment.png}
+\caption{FRFT 输入时域片段}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.52\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubone/06_frft_obs_alpha_scan.png}
+\caption{FRFT \(\alpha\) 扫描}
+\end{subfigure}
+\caption{FRFT 用于比较 near-coalescence 片段与 quiet 片段的能量聚集程度。}
+\end{figure}
+
+执行结果显示，near/quiet 的 FRFT peak-energy ratio 为 15.14，最佳对比的 \(\alpha=0.24\)。
+因此，FRFT 结果与 WDM 一致支持：并合附近信号在适当时频投影中显著更集中。
+
+\subsection{子任务一小结}
+
+子任务一的核心贡献是建立了从 HDF5 数据到可解释时频图的完整链条：
+\begin{itemize}
+  \item 数据层面：真实 HDF5、真实 NaN 处理、真实 TDI 通道；
+  \item 方法层面：WDM 与 FRFT 两类互补时频方法；
+  \item 结果层面：图像展示与能量比/峰值比定量检查相结合。
+\end{itemize}
+
+\section{子任务二：官方 Example 4 与本仓库主线}
+
+\subsection{官方 Triangle-BBH Example 4 的定位}
+
+官方 \official{} README 将 Example 4 定位为 TDC II preliminary analysis example，而不是完整挑战解法。
+官方仓库同时指出，该示例未覆盖更真实噪声、信号重叠和更复杂波形。因此，汇报时应强调：
+本工作并不是简单复刻官方 notebook，而是在官方初步分析流程上完成任务窗口扩展、GPU 加速、
+NESSAI 全采样、诊断和文档化。
+
+官方 Example 4 的主流程可以概括为：
+\[
+\text{TDC 数据}
+\rightarrow
+\text{TDI } X,Y,Z \text{ 到 } A,E
+\rightarrow
+\text{FFT/PSD/covariance}
+\rightarrow
+\text{F-statistics 搜索}
+\rightarrow
+\text{Fisher 局部先验}
+\rightarrow
+\text{NESSAI 采样}
+\rightarrow
+\text{posterior/corner/Taiji frame}.
+\]
+
+\subsection{本仓库的扩展路线}
+
+本仓库保留上述科学流程，但将计算路线改为：
+\[
+\text{Example 4 数据处理}
++ \text{Example 5 GPU F-statistics 搜索}
++ \text{Example 2-style GPU 杂频似然}
++ \text{vectorised NESSAI FlowSampler}.
+\]
+
+核心思想是：不改变贝叶斯推断问题，只改变昂贵似然评估的计算实现。全频 CPU 似然每次评估
+都要在大量频点上重新生成模板并计算 TDI 响应；杂频似然围绕 fiducial waveform 在局部参数
+区域近似评估，GPU 又能批量处理 NESSAI live points，因此总运行时间大幅下降。
+
+\section{空间引力波参数估计的统计框架}
+
+\subsection{频域似然}
+
+对 \(A,E\) 两个通道，数据可写作
+\[
+d_k(t)=h_k(t;\bm{\theta})+n_k(t),\quad k\in\{A,E\}.
+\]
+在高斯平稳噪声假设下，频域噪声加权内积为
+\[
+(a|b)=4\,\mathrm{Re}\sum_{k\in\{A,E\}}\sum_i
+\frac{\tilde a_k^*(f_i)\tilde b_k(f_i)}{S_{n,k}(f_i)}\Delta f,
+\]
+对数似然为
+\[
+\log \mathcal{L}(\bm{\theta})=
+-\frac{1}{2}\left(d-h(\bm{\theta})\,\middle|\,d-h(\bm{\theta})\right)+C.
+\]
+因此，FFT、PSD、频段选择和窗口设计不是辅助步骤，而是似然定义的一部分。
+
+\subsection{NESSAI 嵌套采样}
+
+贝叶斯推断目标为
+\[
+p(\bm{\theta}|d)=\frac{\mathcal{L}(d|\bm{\theta})\pi(\bm{\theta})}{Z},
+\quad
+Z=\int \mathcal{L}(d|\bm{\theta})\pi(\bm{\theta})\,d\bm{\theta}.
+\]
+NESSAI 使用 normalising flow 学习 live points 在等似然面内的分布，从而提高嵌套采样中
+新 live point 的生成效率。本任务中使用 \(n_\mathrm{live}=2000\)，这是复杂引力波后验中较稳妥的
+设置；\(n_\mathrm{live}=200\) 仅用于 pilot 或冒烟测试，不用于科学结论。
+
+\section{官方结果与本仓库结果对比}
+
+\subsection{时域与频域预处理对比}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.48\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\asset/official_example4_output_01_cell7.png}
+\caption{官方 Example 4：时域 TDI 数据}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.48\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubtwo/01_baseline_timeseries.png}
+\caption{本仓库：baseline window 时域图}
+\end{subfigure}
+\caption{时域数据展示对比。官方图展示 Example 4 基线处理，本仓库图保留相同科学对象，并进一步统一保存为可复现输出。}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.48\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\asset/official_example4_output_02_cell12.png}
+\caption{官方 Example 4：频域数据}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.48\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubtwo/02_baseline_frequency_psd.png}
+\caption{本仓库：频域数据与 PSD}
+\end{subfigure}
+\caption{频域和 PSD 处理对比。两者都围绕 \(A/E\) 通道和频域似然展开；本仓库额外保留 baseline 与 5-day 两套窗口的频域诊断。}
+\end{figure}
+
+\subsection{重构图：direct 与 reflected 两支都要看}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubtwo/03_baseline_reconstruction_direct.png}
+\caption{baseline direct reconstruction}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubtwo/04_baseline_reconstruction_reflected.png}
+\caption{baseline reflected reconstruction}
+\end{subfigure}
+\caption{baseline 窗口的 direct/reflected 重构对照。由于 F-statistics 搜索落在反射支，解释外禀参数时必须同时查看反射支参考。}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubtwo/07_five_day_reconstruction_direct.png}
+\caption{5-day direct reconstruction}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubtwo/08_five_day_reconstruction_reflected.png}
+\caption{5-day reflected reconstruction}
+\end{subfigure}
+\caption{任务要求 5-day 窗口的 direct/reflected 重构对照。}
+\end{figure}
+
+\subsection{Posterior distribution：官方全局多模态展示 vs 本仓库局部分支高效采样}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\asset/official_example4_output_05_cell46.png}
+\caption{官方 Example 4 posterior distribution}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubtwo/17_baseline_gpu_nessai_corner.png}
+\caption{本仓库 baseline GPU NESSAI posterior}
+\end{subfigure}
+\caption{posterior distribution 对比。官方图展示 Example 4 CPU 路线下的 posterior/corner 输出，包含更明显的多模态结构；本仓库图为 GPU 杂频似然 + local-fisher NESSAI 的反射支局部后验，橙线为 direct injection，红虚线为 reflected reference。二者回答的问题不同：官方图强调示例的全局 posterior 展示，本仓库图强调在任务窗口内对反射支进行快速、可诊断的全量 NESSAI 估计。}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.78\linewidth]{\figsubtwo/18_five_day_gpu_nessai_corner.png}
+\caption{本仓库 5-day GPU NESSAI posterior distribution。该图用于观察将窗口改为合并前 4 天、后 1 天后，质量、自旋、天区和距离等参数后验的变化。}
+\end{figure}
+
+\subsection{Plot position in Taiji frame：官方多模态图 vs 本仓库反射支局部后验}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.48\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\asset/official_example4_output_06_cell51.png}
+\caption{官方 Example 4：plot position in Taiji frame}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.48\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubtwo/09_baseline_taiji_frame_sky.png}
+\caption{本仓库 baseline：Taiji frame posterior position}
+\end{subfigure}
+\caption{Taiji frame 天区图对比。官方图更直接展示 Example 4 后验在探测器坐标系中的多模态/反射结构；本仓库图是 local-fisher 先验下反射支附近的局部后验，边缘尾部主要来自经度 \(0/2\pi\) 周期回绕，直接支不在本次先验盒中。}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.62\linewidth]{\figsubtwo/10_five_day_taiji_frame_sky.png}
+\caption{本仓库 5-day Taiji frame posterior position。与 baseline 一样，它反映的是同一反射支附近的局部后验，而不是 direct/reflected 两支的全局权重比较。}
+\end{figure}
+
+\subsection{路线差异总结}
+
+\begin{table}[H]
+\centering
+\caption{官方 Example 4 与本仓库子任务二路线对比。}
+\begin{tabular}{p{0.25\linewidth}p{0.32\linewidth}p{0.34\linewidth}}
+\toprule
+方面 & 官方 Example 4 & 本仓库实现 \\
+\midrule
+目标定位 & TDC II preliminary analysis example & 面向任务五交付的完整 baseline + 5-day 工作流 \\
+波形/响应 & WF4Py CPU full-frequency route 为主 & BBHx GPU + heterodyned likelihood \\
+采样器 & NESSAI/Bilby 风格 CPU 路线 & 自定义 \texttt{nessai.model.Model} 接入向量化 GPU 似然 \\
+窗口 & baseline Example 4 对称窗口 & baseline + 任务要求 5-day 非对称窗口 \\
+posterior 范围 & 更接近全局示例展示，保留多模态现象 & local-fisher 反射支局部后验，强调高效与诊断 \\
+运行时间 & 多小时到多日级，取决于环境 & full NESSAI 单窗口约 9.5 min \\
+诊断 & 示例级图像与结果 & coordinate check、preflight、insertion-index、boundary check、trace/logX-logL \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{子任务二定量结果}
+
+\subsection{full GPU NESSAI 运行摘要}
+
+\begin{table}[H]
+\centering
+\caption{baseline 与 5-day 两个窗口的 full GPU NESSAI 结果。}
+\begin{tabular}{lcc}
+\toprule
+指标 & baseline Example 4 & 5-day 任务窗口 \\
+\midrule
+\(n_\mathrm{live}\) & 2000 & 2000 \\
+posterior samples & 10890 & 10879 \\
+\(\log Z\) & \(594014.861 \pm 0.124\) & \(594995.406 \pm 0.125\) \\
+wall time & 9.44 min & 9.59 min \\
+insertion-index KS \(p\) & 0.480 & 0.357 \\
+max boundary fraction & 0.0065 & 0.0074 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+这里必须强调：baseline 与 5-day 使用不同数据段，因此 \(\Delta \log Z\approx 980\) 不能解释为
+Bayes factor。它只能说明各自运行内部的 evidence 估计和收敛状态，不能说明 5-day 窗口在
+贝叶斯模型比较意义上“更优”。
+
+\subsection{收敛诊断与边界检查}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubtwo/11_baseline_nessai_insertion_indices.png}
+\caption{baseline insertion-index}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubtwo/14_five_day_nessai_insertion_indices.png}
+\caption{5-day insertion-index}
+\end{subfigure}
+\caption{NESSAI insertion-index 诊断。两个窗口的 KS \(p\) 值分别为 0.480 和 0.357，未显示明显过约束或欠约束。}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[height=0.42\textheight,keepaspectratio]{\figsubtwo/12_baseline_nessai_trace.png}
+\caption{baseline trace}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[height=0.42\textheight,keepaspectratio]{\figsubtwo/15_five_day_nessai_trace.png}
+\caption{5-day trace}
+\end{subfigure}
+\caption{NESSAI trace 诊断，用于检查采样过程是否存在明显异常。}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubtwo/13_baseline_nessai_logXlogL.png}
+\caption{baseline logX--logL}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubtwo/16_five_day_nessai_logXlogL.png}
+\caption{5-day logX--logL}
+\end{subfigure}
+\caption{NESSAI \(\log X-\log L\) 诊断。该图与 insertion-index、boundary check 一起构成采样质量证据链。}
+\end{figure}
+
+\subsection{参数置信区间变化}
+
+\begin{table}[H]
+\centering
+\caption{部分参数 CI90 宽度对比。比值小于 1 表示 5-day 窗口更窄。}
+\begin{tabular}{lccc}
+\toprule
+参数 & baseline CI90 宽度 & 5-day CI90 宽度 & 比值 \\
+\midrule
+chirp mass & 8172.59 & 7169.53 & 0.877 \\
+mass ratio & 0.00438 & 0.00414 & 0.944 \\
+spin\_1z & 0.02694 & 0.02649 & 0.983 \\
+spin\_2z & 0.12220 & 0.11914 & 0.975 \\
+coalescence time & \(5.44\times10^{-5}\) & \(5.42\times10^{-5}\) & 0.995 \\
+longitude & 0.7595 & 0.7659 & 1.008 \\
+latitude & 0.6825 & 0.6758 & 0.990 \\
+luminosity distance & 9950.04 & 10241.14 & 1.029 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+物理解释如下：
+\begin{itemize}
+  \item 质量类参数改善最清楚，chirp mass CI90 宽度缩小约 12.3\%。
+  \item 自旋和质量比略有改善，但幅度较小。
+  \item 天区和 coalescence time 基本不变，说明当前局部反射支、PSD 估计和探测器调制信息限制了外禀参数改善。
+  \item 光度距离略变宽，符合 MBHB 中常见的距离--倾角简并，不应解读为方法失效。
+\end{itemize}
+
+\section{创新点}
+
+\subsection{创新点一：从“运行示例”到“可复现实验链”}
+
+官方 Example 4 是教学和初步分析示例。本仓库把任务要求拆成可复现工作流：环境文件、notebook、
+脚本、结果 CSV/JSON、诊断图和理解文档同时保存。导师可以从任何一层追溯结果来源。
+
+\subsection{创新点二：GPU 杂频似然接入 NESSAI}
+
+任务要求保留 NESSAI。直接 CPU 全频似然会让 full run 变成多小时甚至多日级。本工作将
+Triangle-BBH 的 GPU heterodyned likelihood 包装为 NESSAI model，使 NESSAI 批量评估 live points。
+这样既保留 nested sampling 的 posterior/evidence 框架，又大幅降低单次似然成本。
+
+\subsection{创新点三：诊断体系完整}
+
+生产运行前后均有 guardrails：
+\begin{itemize}
+  \item coordinate check：确认内部参数坐标与似然函数一致；
+  \item preflight：确认注入点和 fiducial 附近似然可计算；
+  \item vectorized benchmark：确认 GPU 批量似然吞吐；
+  \item insertion-index：检查 NESSAI 插入秩是否异常；
+  \item boundary fraction：检查 Fisher 局部先验是否截断后验；
+  \item trace/logX--logL：保留 NESSAI 原生诊断图。
+\end{itemize}
+
+\subsection{创新点四：结果解释保持科学边界}
+
+本工作没有把局部反射支 posterior 误称为全局天区结果，也没有把跨窗口 \(\Delta\log Z\)
+误解释为 Bayes factor。对导师汇报时，这一点很重要：它说明当前结果不仅“跑出来了”，而且
+知道哪些结论能说、哪些结论不能说。
+
+\section{局限性与后续计划}
+
+\subsection{当前局限}
+
+\begin{enumerate}
+  \item \textbf{局部反射支后验：} 当前 local-fisher 先验围绕 F-statistics 搜索到的反射支构造，
+  因此不能定量回答 direct/reflected 两支谁权重更高。
+  \item \textbf{杂频似然局部有效：} heterodyned likelihood 依赖 fiducial waveform，wide-sky
+  单次大范围探索可能不稳定。
+  \item \textbf{单注入限制：} 单个 TDC 注入不能做 population P--P 检验，只能做单次运行内部诊断。
+  \item \textbf{继承官方示例简化：} 官方 README 已说明 Example 4 未覆盖更真实噪声、信号重叠和更复杂波形。
+\end{enumerate}
+
+\subsection{后续工作}
+
+后续可按优先级推进：
+\begin{enumerate}
+  \item 跑一条 direct-branch local-fisher NESSAI，以 direct injection/search point 为 fiducial，
+  与 reflected branch 的 \(\log Z\) 和 posterior 做定量比较。
+  \item 研究 two-branch mixture 或分支合并 posterior，用于更完整描述天区反射简并。
+  \item 在更真实 TDC 场景中加入非平稳噪声、信号重叠和更复杂波形。
+  \item 做多注入实验，真正进行 P--P calibration，而不仅是单次 insertion-index 诊断。
+  \item 将 WDM/FRFT 的时频特征与参数估计先验或候选事件定位结合，探索 AI for Science 方向。
+\end{enumerate}
+
+\section{导师问答备忘}
+
+\paragraph{为什么官方 posterior 图和我的 posterior 图看起来不同？}
+官方 Example 4 更接近全局示例 posterior 展示，可见明显多模态；本仓库采用 local-fisher +
+heterodyned likelihood，围绕反射支 fiducial 进行局部后验采样。因此二者不是互相矛盾，而是探索范围不同。
+
+\paragraph{为什么不直接用 wide-sky 一次覆盖两支？}
+杂频似然在 fiducial waveform 附近最可靠。把 sky prior 放得太宽，远离 fiducial 的模板相位差会变大，
+杂频近似可能失真。更稳妥的做法是 direct 与 reflected 两支分别建立 fiducial，各跑 local NESSAI。
+
+\paragraph{为什么 \(\Delta\log Z\) 不能说明 5-day 更好？}
+Bayes factor 要求同一数据、不同模型。baseline 和 5-day 是不同数据窗口，所以 \(\log Z\) 的绝对值受数据长度、
+信号能量和噪声实现影响。应比较的是 CI 宽度、posterior 形态和诊断是否正常。
+
+\paragraph{项目最值得继续做的方向是什么？}
+短期是 direct/reflected 双分支 evidence 比较；中期是处理信号重叠和真实噪声；长期是把子任务一的时频特征
+与子任务二的快速参数估计结合，形成事件搜索到参数估计的一体化 pipeline。
+
+\section{结论}
+
+任务五的两个子任务已经形成闭环：
+\begin{itemize}
+  \item 子任务一完成了真实 LDC TDI 数据的时频可视化，并用 WDM/FRFT 定量验证并合附近信号增强；
+  \item 子任务二在官方 Example 4 基础上完成 baseline 与 5-day 窗口的 MBHB 参数估计；
+  \item GPU 杂频似然 + NESSAI 将 full nested sampling 压缩到单窗口约 9.5 分钟；
+  \item 仓库保存了环境、脚本、notebook、结果、图像和文档，具备可复现性；
+  \item 当前结果科学边界清楚，为下一阶段 direct/reflected 双分支比较和更真实 TDC 场景研究打下基础。
+\end{itemize}
+
+\section{补充图像：仓库与官方示例中的其余关键输出}
+
+本节用于汇报时按需翻页展示，主报告正文已经解释了主要逻辑。这里补充未在正文主线中展开的
+仓库图片和官方 Example 4 输出图，便于导师追问某一步时快速定位证据。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.75\linewidth]{\figsubone/03_cropped_obs_and_sky_a_window.png}
+\caption{子任务一 cropped observed/reference window。该图用于确认 WDM 与 FRFT 所选窗口确实覆盖 coalescence 附近信号。}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubtwo/05_five_day_timeseries.png}
+\caption{5-day time series}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\figsubtwo/06_five_day_frequency_psd.png}
+\caption{5-day frequency-domain data and PSD}
+\end{subfigure}
+\caption{任务要求 5-day 非对称窗口的数据检查图。它们与 baseline 时域/频域图形成一组，用于确认窗口改变后数据处理仍一致。}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\asset/official_example4_output_03_cell27.png}
+\caption{官方 Example 4 输出图 3}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\asset/official_example4_output_04_cell30.png}
+\caption{官方 Example 4 输出图 4}
+\end{subfigure}
+\caption{官方 Example 4 的中间验证图。它们与本仓库 direct/reflected reconstruction 图共同说明：本工作没有脱离官方基线流程，而是在其基础上增加 5-day 窗口、GPU 似然和全量诊断。}
+\end{figure}
+
+\begin{thebibliography}{9}
+\bibitem{trianglebbh}
+Triangle Data Center.
+\newblock \emph{Triangle-BBH: Frequency-domain BBH TDI-2.0 response template and examples}.
+\newblock \url{https://github.com/TriangleDataCenter/Triangle-BBH}.
+
+\bibitem{taiji}
+Z. Ren et al.
+\newblock Taiji Data Challenge for Exploring Gravitational Wave Universe.
+\newblock \emph{Frontiers of Physics} 18, 64302 (2023).
+\newblock arXiv:2301.02967.
+
+\bibitem{nessai}
+M. J. Williams, J. Veitch, and C. Messenger.
+\newblock Nested Sampling with Normalising Flows for Gravitational-Wave Inference.
+\newblock \emph{Physical Review D} 103, 103006 (2021).
+\newblock arXiv:2102.11056.
+
+\bibitem{bbhx}
+M. L. Katz.
+\newblock BBHx documentation.
+\newblock \url{https://mikekatz04.github.io/BBHx/html/index.html}.
+
+\bibitem{marsat}
+S. Marsat et al.
+\newblock Frequency-domain gravitational waveforms for space-based detectors.
+\newblock \emph{Physical Review D} 103, 083011 (2021).
+
+\bibitem{sbi}
+I. M. Vílchez and C. F. Sopuerta.
+\newblock Efficient Massive Black Hole Binary parameter estimation for LISA using Sequential Neural Likelihood.
+\newblock arXiv:2406.00565.
+
+\bibitem{rift}
+A. Jan et al.
+\newblock Adapting a novel framework for rapid inference of massive black hole binaries for LISA.
+\newblock arXiv:2410.15542.
+\end{thebibliography}
+
+\end{document}
