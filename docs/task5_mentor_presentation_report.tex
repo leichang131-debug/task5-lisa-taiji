@@ -58,7 +58,7 @@ GPU 化、诊断化和文档化提高了可运行性和可交付性。
 \tableofcontents
 \newpage
 
-\section{汇报目标与建议讲述节奏}
+\section{汇报目标}
 
 本次汇报的核心目标不是逐行解释代码，而是说明三件事：
 \begin{enumerate}
@@ -69,22 +69,6 @@ GPU 化、诊断化和文档化提高了可运行性和可交付性。
   \item 我清楚当前结果的科学边界：局部反射支后验、跨窗口 \(\log Z\) 不作 Bayes factor、
   单注入不能做 population P--P 检验。
 \end{enumerate}
-
-\begin{table}[H]
-\centering
-\caption{建议的一小时汇报时间分配。}
-\begin{tabular}{p{0.34\linewidth}p{0.14\linewidth}p{0.42\linewidth}}
-\toprule
-模块 & 时间 & 汇报重点 \\
-\midrule
-项目背景与任务目标 & 5 min & LISA/Taiji、TDI、MBHB、两个子任务之间的关系 \\
-子任务一：LDC 时频可视化 & 12 min & HDF5 读取、NaN 处理、WDM、FRFT、定量 sanity checks \\
-子任务二：Taiji MBHB 参数估计 & 25 min & Example 4、TDI/FFT/PSD、F-stat 搜索、Fisher 先验、NESSAI 采样 \\
-官方结果与本仓库结果对比 & 8 min & posterior distribution、Taiji frame、CPU 路线与 GPU 路线差别 \\
-创新点、不足与后续工作 & 10 min & GPU 杂频似然、诊断体系、direct/reflected branch、wide-sky 与多注入扩展 \\
-\bottomrule
-\end{tabular}
-\end{table}
 
 \section{项目背景：从空间引力波数据到 MBHB 参数估计}
 
@@ -624,24 +608,6 @@ Triangle-BBH 的 GPU heterodyned likelihood 包装为 NESSAI model，使 NESSAI 
   \item 做多注入实验，真正进行 P--P calibration，而不仅是单次 insertion-index 诊断。
   \item 将 WDM/FRFT 的时频特征与参数估计先验或候选事件定位结合，探索 AI for Science 方向。
 \end{enumerate}
-
-\section{导师问答备忘}
-
-\paragraph{为什么官方 posterior 图和我的 posterior 图看起来不同？}
-官方 Example 4 更接近全局示例 posterior 展示，可见明显多模态；本仓库采用 local-fisher +
-heterodyned likelihood，围绕反射支 fiducial 进行局部后验采样。因此二者不是互相矛盾，而是探索范围不同。
-
-\paragraph{为什么不直接用 wide-sky 一次覆盖两支？}
-杂频似然在 fiducial waveform 附近最可靠。把 sky prior 放得太宽，远离 fiducial 的模板相位差会变大，
-杂频近似可能失真。更稳妥的做法是 direct 与 reflected 两支分别建立 fiducial，各跑 local NESSAI。
-
-\paragraph{为什么 \(\Delta\log Z\) 不能说明 5-day 更好？}
-Bayes factor 要求同一数据、不同模型。baseline 和 5-day 是不同数据窗口，所以 \(\log Z\) 的绝对值受数据长度、
-信号能量和噪声实现影响。应比较的是 CI 宽度、posterior 形态和诊断是否正常。
-
-\paragraph{项目最值得继续做的方向是什么？}
-短期是 direct/reflected 双分支 evidence 比较；中期是处理信号重叠和真实噪声；长期是把子任务一的时频特征
-与子任务二的快速参数估计结合，形成事件搜索到参数估计的一体化 pipeline。
 
 \section{结论}
 
