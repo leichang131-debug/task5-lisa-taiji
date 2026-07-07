@@ -1,0 +1,613 @@
+\documentclass[11pt,a4paper]{ctexart}
+
+\usepackage[margin=2.0cm]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{xurl}
+\usepackage{listings}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!55!black,
+  citecolor=blue!55!black,
+  urlcolor=blue!55!black
+}
+
+\setlist[itemize]{leftmargin=1.7em}
+\setlist[enumerate]{leftmargin=1.7em}
+\emergencystretch=3em
+\Urlmuskip=0mu plus 2mu
+
+\lstdefinestyle{pycode}{
+  language=Python,
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{blue!60!black},
+  commentstyle=\color{green!40!black},
+  stringstyle=\color{red!45!black},
+  breaklines=true,
+  showstringspaces=false,
+  frame=single,
+  framerule=0.3pt,
+  columns=fullflexible
+}
+
+\newcommand{\repo}{\href{https://github.com/leichang131-debug/task5-lisa-taiji}{task5-lisa-taiji}}
+\newcommand{\official}{\href{https://github.com/TriangleDataCenter/Triangle-BBH}{Triangle-BBH}}
+\newcommand{\scriptpath}{\texttt{scripts/build\_subtask2\_notebook.py}}
+\newcommand{\nbpath}{\texttt{notebooks/02\_taiji\_mbhb\_parameter\_estimation.ipynb}}
+
+\title{\bfseries NESSAI 采样原理、Triangle-BBH 官方路线与本仓库实现说明\\
+\large 任务五子任务二：Taiji MBHB 参数估计技术笔记}
+\author{雷畅\\代码仓库：\repo}
+\date{2026 年 7 月}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本文档面向任务五子任务二的技术解释，重点说明 NESSAI 嵌套采样的工作原理、官方
+\official{} Example 4 的 CPU 路线、本仓库 \repo{} 的 GPU 杂频似然 + 向量化 NESSAI 路线、
+两条路线 posterior distribution 图存在差异的代码层原因，以及任务要求的 5-day 窗口
+(\(t_c-4\,\mathrm{day}\) 到 \(t_c+1\,\mathrm{day}\)) 在代码中的具体实现方式。文档将论文中的算法
+机制、官方仓库定位和本仓库函数/变量逐项对应，避免把 NESSAI 理解为普通 MCMC 或神经网络
+直接回归参数。核心结论是：本仓库没有改变贝叶斯推断目标，而是将 Triangle-BBH 的 GPU
+heterodyned likelihood 包装成 \texttt{nessai.model.Model}，使 NESSAI 能用批量 GPU 似然完成
+full nested sampling；posterior 图与官方 CPU 示例不同，主要源于先验范围、fiducial 分支、
+似然近似和参数坐标空间不同，而不是采样失败。
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{需要回答的核心问题}
+
+围绕子任务二，导师最可能追问四类问题：
+\begin{enumerate}
+  \item NESSAI 到底如何采样？它与普通 MCMC、dynesty 或直接神经网络回归有什么区别？
+  \item 官方 \official{} Example 4 的 CPU 路线如何组织数据、似然和采样？
+  \item 本仓库为什么使用 GPU heterodyned likelihood + vectorised NESSAI？具体定义了哪些函数和变量？
+  \item 为什么官方 CPU posterior 图和本仓库 posterior 图不同？5-day 窗口又是怎样真正进入代码的？
+\end{enumerate}
+
+本文档的回答方式是从统计目标出发，再落到代码实现。NESSAI 的目标仍然是贝叶斯后验和证据：
+\[
+p(\theta|d,H)=\frac{\mathcal{L}(d|\theta,H)\pi(\theta|H)}{Z},
+\qquad
+Z=\int \mathcal{L}(d|\theta,H)\pi(\theta|H)\,d\theta .
+\]
+其中 \(\theta\) 是 MBHB 参数，\(d\) 是频域 \(A/E\) 通道数据，\(\mathcal{L}\) 是高斯噪声假设下的
+频域似然，\(\pi\) 是先验，\(Z\) 是 Bayesian evidence。NESSAI 的创新在于更高效地产生
+nested sampling 的替换 live point，而不是改变上式。
+
+\section{文献中的 NESSAI 算法原理}
+
+\subsection{从 nested sampling 到 constrained prior}
+
+标准 nested sampling 维护 \(N_\mathrm{live}\) 个 live points。每一步删除似然最低的点，其似然
+记为 \(L_\ast\)，然后从受限先验
+\[
+\pi(\theta | \mathcal{L}(\theta)>L_\ast)
+\]
+中抽取一个新点替换它。该过程逐步压缩先验体积 \(X\)，并用被丢弃点和最终 live points 估计
+evidence 和 posterior。
+
+困难在于：高维引力波参数空间中的等似然面往往弯曲、相关、周期性强、多模态，直接从
+\(\mathcal{L}>L_\ast\) 区域采样很难。传统做法包括随机游走 MCMC、椭球包络或动态 nested
+sampling；这些方法在昂贵似然下的主要成本是大量 likelihood evaluations。
+
+\subsection{NESSAI 的 normalising-flow proposal}
+
+Williams, Veitch \& Messenger 提出的 NESSAI 使用 normalising flow 学习当前 live points 在等似然面
+内的分布\cite{williams2021nessai}。其核心步骤为：
+\begin{enumerate}
+  \item 用当前 live points 训练一个可逆映射 \(f:X\rightarrow Z\)，其中 \(X\) 是采样空间，
+  \(Z\) 是 latent Gaussian 空间。
+  \item 将当前 worst live point \(\theta_\ast\) 映射到 \(z_\ast=f(\theta_\ast)\)。在 Gaussian latent
+  空间中，\(\|z_\ast\|\) 给出一个近似的 n-ball 半径。
+  \item 在 latent n-ball 中批量采样新点 \(z_i\)，再用 flow 逆映射 \(\theta_i=f^{-1}(z_i)\) 回到参数空间。
+  \item 用 prior/proposal ratio 做 rejection correction，保证样本服从原始采样先验，而不是单纯服从
+  flow proposal。
+  \item 合格点进入 proposal pool。后续 nested sampling 从 pool 中取点替换 worst live point；当 pool
+  耗尽、接受率下降或达到 retraining 条件时，重新训练 flow。
+\end{enumerate}
+
+因此，NESSAI 的神经网络部分只负责 proposal；是否接受一个点仍然由真实 likelihood 和 nested
+sampling 约束决定。论文验证了 NESSAI 在 128 个模拟 compact binary coalescence 信号上的无偏性，
+并与 dynesty 的 log-evidence 一致，同时减少似然调用次数。该结论对本项目很重要，因为 MBHB
+频域响应和 TDI 似然也属于昂贵似然问题。
+
+\subsection{诊断：insertion index、边界和 P--P 检验}
+
+NESSAI 论文强调诊断的重要性。主要包括：
+\begin{itemize}
+  \item \textbf{insertion index}：新 live point 插入现有 live points 的似然排序位置应服从均匀分布。
+  若明显偏离，可能说明 proposal 过约束或欠约束。
+  \item \textbf{logX-logL trace}：检查先验体积压缩和似然增长是否平滑。
+  \item \textbf{P--P calibration}：需要多次注入才能验证总体无偏性。单个 TDC 注入只能报告
+  insertion-index、边界检查和 trace 等单次运行诊断。
+\end{itemize}
+
+本仓库保存了 NESSAI 原生诊断图，同时输出 JSON 形式的辅助 KS 检验和 boundary fraction；这与
+NESSAI 论文建议一致。
+
+\subsection{近两年相关应用}
+
+近两年开放获取文献中，NESSAI 继续作为引力波推断中的重要 sampler 或 benchmark：
+\begin{itemize}
+  \item Covas, Prix \& Martins 的连续波候选 follow-up 框架使用 Bilby 包装 MCMC 或 nested sampling，
+  并比较 DYNESTY、NESSAI 和 PTEMCEE，说明 NESSAI 已被用于候选后续参数估计，而不只是方法论文
+  的示例\cite{covas2024cwfollowup}。
+  \item El Gammal 等在 LISA deterministic source inference 中将 NESSAI 作为 cutting-edge nested
+  sampler 基准，测试 DWD、stellar-mass BHB 和 SMBHB 信号，说明 LISA/space-based inference 的
+  计算瓶颈与本任务高度相关\cite{elgammal2025lisa}。
+\end{itemize}
+
+\section{官方 Triangle-BBH Example 4 的 CPU 路线}
+
+\subsection{官方仓库定位}
+
+\official{} README 将该库描述为 frequency-domain BBH TDI-2.0 response template and basic analysis
+tools。官方说明其包含两类波形响应包装：BBHx 的 IMRPhenomD/HM CPU/GPU 路线，以及 WF4Py 的
+IMRPhenomD/HM CPU 路线。同时，Example 4 被定位为 Taiji Data Challenge II preliminary analysis
+example，而不是完整挑战解法；官方也明确指出示例未覆盖更真实噪声、信号重叠和更复杂波形
+\cite{trianglebbh}。
+
+因此，官方 Example 4 的作用更像教学基线：展示如何读 TDC 数据、构造 TDI 频域数据、用 F-statistics
+搜索 MBHB 参数、进行 Fisher 分析和 posterior sampling。
+
+\subsection{CPU 路线的逻辑链}
+
+官方 CPU 路线可概括为：
+\[
+\begin{aligned}
+\text{TDI }X/Y/Z
+&\rightarrow \text{A/E/T 或 A/E}
+\rightarrow \text{FFT/PSD/Covariance} \\
+&\rightarrow \text{WF4Py CPU response}
+\rightarrow \text{F-statistics search} \\
+&\rightarrow \text{Fisher prior}
+\rightarrow \text{Bilby/NESSAI posterior}.
+\end{aligned}
+\]
+
+本仓库保留了这条 CPU/Bilby/NESSAI 参考路径，但默认不执行：
+\begin{lstlisting}[style=pycode]
+RUN_CPU_NESSAI = False
+OFFICIAL_SAMPLER_SETTINGS = dict(sampler="nessai", nlive=1200, stopping=0.1)
+\end{lstlisting}
+对应位置在 \scriptpath{} 的 runtime switch 区域。CPU 路线中的 likelihood wrapper 为：
+\begin{lstlisting}[style=pycode]
+class BilbyLikelihoodWrapper(bilby.Likelihood):
+    def log_likelihood(self):
+        parameter_array = ParamDict2ParamArrFref(self.parameters)
+        if self.like_type == "heterodyned":
+            return self.like_object.het_log_like(parameter_array=parameter_array)
+        return self.like_object.full_log_like(parameter_array=parameter_array)
+\end{lstlisting}
+
+其先验由 \texttt{build\_priors(search, FIM)} 构造。质量、自旋、时间和距离使用搜索点加 Fisher 误差；
+角度参数则比较宽：
+\begin{lstlisting}[style=pycode]
+reference_phase ~ Uniform(0, 2*pi)
+inclination     ~ Sine(0, pi)
+longitude       ~ Uniform(0, 2*pi), periodic
+latitude        ~ Cosine(-pi/2, pi/2)
+psi             ~ Uniform(0, pi), periodic
+\end{lstlisting}
+
+这意味着官方/CPU 风格的 posterior 图更容易展示全局结构，包括 direct/reflected 天区简并和周期参数
+导致的多峰形态。
+
+\section{本仓库 GPU 杂频似然 + NESSAI 的实现}
+
+\subsection{为什么要改造官方路线}
+
+任务要求保留 NESSAI 采样，但直接 CPU full-frequency likelihood 对 MBHB/TDI 数据非常慢。你的仓库
+采用的改造是：
+\[
+\text{Triangle-BBH GPU response}
++ \text{heterodyned likelihood}
++ \text{vectorised nessai.Model}.
+\]
+该路线并未改变贝叶斯目标，只是让 NESSAI 每次能够批量评估 live points，且每个似然评估只在 fiducial
+waveform 附近使用杂频近似。实际 full run 结果显示，baseline 和 5-day 两个窗口分别约 9.44 分钟和
+9.59 分钟完成。
+
+\subsection{NESSAI 参数空间：内部坐标与物理坐标}
+
+本仓库的 NESSAI 不直接在所有物理参数上均匀采样，而是在 Triangle-BBH 内部参数坐标中采样：
+\begin{lstlisting}[style=pycode]
+GPU_NESSAI_INTERNAL_PARAM_NAMES = [
+    "log_chirp_mass",
+    "mass_ratio",
+    "spin_1z",
+    "spin_2z",
+    "coalescence_time",
+    "coalescence_phase",
+    "log_luminosity_distance",
+    "cos_inclination",
+    "longitude",
+    "sin_latitude",
+    "psi",
+]
+\end{lstlisting}
+
+输出和报告时再转回物理参数：
+\begin{lstlisting}[style=pycode]
+GPU_NESSAI_PHYSICAL_PARAM_NAMES = [
+    "chirp_mass",
+    "mass_ratio",
+    "spin_1z",
+    "spin_2z",
+    "coalescence_time",
+    "coalescence_phase",
+    "luminosity_distance",
+    "inclination",
+    "longitude",
+    "latitude",
+    "psi",
+]
+\end{lstlisting}
+
+这一步非常重要，因为 \texttt{log\_chirp\_mass} 和 \texttt{log\_luminosity\_distance} 上的均匀先验，
+对应物理量上的 Jeffreys-like 先验；\texttt{cos\_inclination} 和 \texttt{sin\_latitude} 更适合角度
+各向同性，但 corner 图显示时又会转回 \(\iota\) 和 \(\beta\)。
+
+\subsection{GPU heterodyned likelihood 的构造}
+
+代码通过 \texttt{build\_gpu\_heterodyned\_likelihood(gpu\_search)} 构造似然：
+\begin{lstlisting}[style=pycode]
+Like_gpu = Likelihood(
+    response_generator=FDTDI_GPU,
+    frequency=gpu_search["gpu_window"]["frequency"],
+    data=gpu_search["gpu_window"]["data"],
+    invserse_covariance_matrix=gpu_search["gpu_window"]["inv_covariance"],
+    response_parameters=gpu_search["response_kwargs_direct"],
+    use_gpu=True,
+)
+Like_gpu.prepare_het_log_like(
+    base_parameters=ParamDict2ParamArr(gpu_search["searched_parameters"])
+)
+\end{lstlisting}
+
+这里 \texttt{base\_parameters} 是 F-statistics 搜索得到的 fiducial 参数。heterodyned likelihood 的有效性
+依赖待评估参数靠近该 fiducial，因此后面的先验盒必须是 local-fisher，而不是任意 wide-sky。
+
+\subsection{Fisher 局部先验盒}
+
+NESSAI bounds 由 \texttt{build\_gpu\_nessai\_bounds(gpu\_search, FIM)} 生成。核心参数为：
+\begin{lstlisting}[style=pycode]
+GPU_NESSAI_PRIOR_SIGMA = 8.0
+GPU_NESSAI_SKY_PRIOR_MODE = "local_fisher"
+GPU_NESSAI_LOCAL_MAX_HALF_WIDTHS = {
+    "coalescence_phase": 0.5,
+    "inclination": 0.25,
+    "longitude": 0.5,
+    "latitude": 0.5,
+    "psi": 0.5,
+}
+\end{lstlisting}
+
+逻辑为：以 F-stat 搜索点为中心，用 \(8\sigma_\mathrm{Fisher}\) 构造盒子；如果某些角度参数的
+Fisher 盒太宽，就用上面的最大半宽裁剪。随后将物理 bounds 用 \texttt{ParamDict2ParamArr} 转换到
+Triangle-BBH 内部坐标，交给 NESSAI。
+
+\subsection{自定义 NESSAI Model}
+
+本仓库最核心的类是：
+\begin{lstlisting}[style=pycode]
+class TaijiGPUHeterodynedNESSAIModel(Model):
+    def __init__(self, param_names, bounds, like_gpu, likelihood_chunksize=None):
+        self.names = list(param_names)
+        self.bounds = bounds
+        self._like_gpu = like_gpu
+        self.allow_vectorised = True
+        self.vectorised_likelihood = True
+        self.likelihood_chunksize = likelihood_chunksize
+\end{lstlisting}
+
+\texttt{log\_prior} 实现内部坐标盒上的均匀先验：
+\begin{lstlisting}[style=pycode]
+def log_prior(self, x):
+    log_p = np.full(x.size, -np.inf)
+    in_bounds = self.in_bounds(x)
+    width_log_norm = 0.0
+    for name in self.names:
+        width_log_norm += np.log(self.bounds[name][1] - self.bounds[name][0])
+    log_p[in_bounds] = -width_log_norm
+    return log_p
+\end{lstlisting}
+
+\texttt{log\_likelihood} 将 NESSAI 的 structured array 拼成 \((n_\mathrm{dim},N)\) 矩阵，并调用
+Triangle-BBH 的批量 GPU 杂频似然：
+\begin{lstlisting}[style=pycode]
+params = np.vstack([np.atleast_1d(x[name]).astype(float) for name in self.names])
+ll_valid = self._like_gpu.het_log_like_vectorized(params_eval)
+\end{lstlisting}
+
+这正是本仓库相对官方 CPU 路线的关键：NESSAI 仍然负责 nested sampling，但 likelihood evaluation
+变成 GPU 批量评估。
+
+\subsection{FlowSampler 调用}
+
+生产运行由 \texttt{run\_gpu\_nessai\_sampler(gpu\_search, FIM, label)} 完成：
+\begin{lstlisting}[style=pycode]
+fs = FlowSampler(
+    model,
+    output=str(output),
+    nlive=GPU_NESSAI_NLIVE,
+    stopping=GPU_NESSAI_STOPPING,
+    seed=GPU_NESSAI_SEED,
+    resume=GPU_NESSAI_RESUME,
+    likelihood_chunksize=GPU_NESSAI_LIKELIHOOD_CHUNKSIZE,
+    pytorch_threads=1,
+)
+fs.run(plot=GPU_NESSAI_PLOT_DIAGNOSTICS, save=True)
+\end{lstlisting}
+
+实际运行配置为：
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+参数 & 数值 \\
+\midrule
+\texttt{GPU\_NESSAI\_RUN\_MODE} & \texttt{full} \\
+\texttt{GPU\_NESSAI\_NLive} / \texttt{full\_nlive} & 2000 \\
+\texttt{stopping} & 0.1 \\
+\texttt{seed} & 1234 \\
+\texttt{likelihood\_chunksize} & 512 \\
+\texttt{sky\_prior\_mode} & \texttt{local\_fisher} \\
+\texttt{sampler} & \texttt{nessai.FlowSampler} \\
+\texttt{likelihood} &
+  \begin{tabular}[t]{@{}l@{}}
+  \texttt{Triangle\_BBH GPU heterodyned}\\
+  \texttt{het\_log\_like\_vectorized}
+  \end{tabular} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{官方 CPU posterior 与本仓库 posterior 差异的原因}
+
+\subsection{不是采样失败，而是统计问题不同}
+
+官方 posterior 图和本仓库 posterior 图不应被要求完全一致。主要原因是：
+\begin{enumerate}
+  \item 官方 CPU 示例更接近宽先验/全局示例展示；本仓库是反射支附近的 local-fisher posterior。
+  \item 官方路线偏 full-frequency CPU likelihood；本仓库主线使用 fiducial 附近有效的 GPU heterodyned likelihood。
+  \item 官方角度先验较宽，会展示 direct/reflected 简并；本仓库为保证杂频近似有效，主动限制角度半宽。
+  \item 本仓库在内部参数坐标上采样，再转回物理坐标展示，视觉形状也会改变。
+\end{enumerate}
+
+\subsection{先验范围差异}
+
+CPU/Bilby 参考路线中，角度参数为宽先验：
+\[
+\lambda\sim U(0,2\pi),\quad
+\beta\sim \cos\beta,\quad
+\iota\sim \sin\iota,\quad
+\psi\sim U(0,\pi).
+\]
+本仓库 GPU NESSAI 路线中，baseline 实际 Fisher 盒示例为：
+\begin{verbatim}
+inclination: [1.863, 1.907]
+longitude:   [1.671, 2.671]
+latitude:    [-1.285, -0.285]
+psi:         [1.361, 2.361]
+\end{verbatim}
+5-day 窗口的实际盒子也类似：
+\begin{verbatim}
+inclination: [1.859, 1.910]
+longitude:   [1.702, 2.702]
+latitude:    [-1.313, -0.313]
+psi:         [1.336, 2.336]
+\end{verbatim}
+
+因此，本仓库 posterior 不会展示被先验盒排除的 direct branch 或其它远端天区模态。
+
+\subsection{F-stat 搜索中心落在 reflected branch}
+
+代码中 F-statistics 搜索会保存 direct 和 reflected 两套参数：
+\begin{lstlisting}[style=pycode]
+searched_parameters_reflected = get_reflected_parameter_dict(
+    searched_params=searched_parameters,
+    orbit=orbit
+)
+\end{lstlisting}
+
+实际结果显示，搜索最大值更接近 ecliptic-plane reflected branch。corner 图中橙色实线表示 direct
+injection，红色虚线表示 reflected reference。因此判断外禀参数恢复时，应当看 posterior 与红色虚线
+的关系，而不是只看橙色 direct injection。
+
+\subsection{为什么不能简单开启 wide-sky}
+
+将 \texttt{GPU\_NESSAI\_SKY\_PRIOR\_MODE} 改成 \texttt{wide\_sky} 表面上能覆盖更大天区，但会破坏
+heterodyned likelihood 的局部有效前提。远离 fiducial waveform 时，模板相位差不再平滑，杂频近似
+可能失真。更严谨的做法是：
+\begin{enumerate}
+  \item 以 direct branch fiducial 跑一次 local-fisher NESSAI；
+  \item 以 reflected branch fiducial 跑一次 local-fisher NESSAI；
+  \item 比较两支的 \(\log Z\)、posterior、reconstruction 和 residual；
+  \item 若需要全局图，再合并分支 posterior 或做 mixture analysis。
+\end{enumerate}
+
+\section{5-day 窗口期的具体实现逻辑}
+
+\subsection{窗口定义}
+
+任务要求的 5-day 窗口不是官方 baseline 的对称窗口，而是：
+\[
+[t_c-4\,\mathrm{day},\;t_c+1\,\mathrm{day}].
+\]
+代码定义在 \texttt{get\_window\_bounds(tc\_day, mode)} 中：
+\begin{lstlisting}[style=pycode]
+def get_window_bounds(tc_day: float, mode: str) -> tuple[float, float]:
+    if mode == "official_baseline":
+        return tc_day - 2.5, tc_day + 2.5
+    if mode == "task_five_day":
+        return tc_day - 4.0, tc_day + 1.0
+    raise ValueError(f"Unknown mode: {mode}")
+\end{lstlisting}
+
+\subsection{数据切片与 FFT/PSD 重建}
+
+\texttt{build\_window\_data(label, mode, psd\_mode="before")} 是窗口构造的核心函数。它执行：
+\begin{enumerate}
+  \item 从注入参数读取 \(t_c\)；
+  \item 根据 mode 得到 \texttt{start\_day} 和 \texttt{end\_day}；
+  \item 用 mask 从完整 TDI 时间序列切出当前窗口；
+  \item 对窗口内 \(A/E\) 通道重新做 Tukey-window FFT；
+  \item 用窗口开始之前的数据估计 PSD；
+  \item 截取频段 \(5\times10^{-5}\,\mathrm{Hz}\le f\le10^{-2}\,\mathrm{Hz}\)；
+  \item 重新构造 \texttt{CovMat} 和 \texttt{InvCovMat}。
+\end{enumerate}
+
+关键代码为：
+\begin{lstlisting}[style=pycode]
+tc_day = get_tc_day(injected_parameters)
+start_day, end_day = get_window_bounds(tc_day, mode)
+mask = (full_time / DAY >= start_day) & (full_time / DAY <= end_day)
+data_time = full_time[mask]
+data_channels_td = full_channels_td[:, mask]
+\end{lstlisting}
+
+注意 mask 使用闭区间，因此 5 天、采样间隔 \(dt=10\,\mathrm{s}\) 时会得到约
+\[
+5\times86400/10+1=43201
+\]
+个采样点。README 中记录 baseline 和 5-day 均为 43201 samples。
+
+\subsection{5-day 窗口对象如何进入后续流程}
+
+窗口对象创建处为：
+\begin{lstlisting}[style=pycode]
+five_day_window = build_window_data(
+    "task_five_day",
+    "task_five_day",
+    psd_mode="before"
+)
+plot_window_timeseries(five_day_window, "05_five_day_timeseries.png")
+plot_window_frequency(five_day_window, "06_five_day_frequency_psd.png")
+\end{lstlisting}
+
+随后该对象进入完整 GPU 路线：
+\begin{lstlisting}[style=pycode]
+five_day_gpu_preflight = run_gpu_preflight(five_day_window, "task_five_day")
+five_day_gpu_search, five_day_gpu_FIM = load_gpu_search_from_cache(
+    five_day_window, "task_five_day"
+)
+five_day_gpu_FIM = run_gpu_fisher_analysis(five_day_window, five_day_gpu_search)
+five_day_gpu_nessai_sampler, five_day_gpu_summary = run_gpu_nessai_sampler(
+    five_day_gpu_search, five_day_gpu_FIM, "task_five_day"
+)
+\end{lstlisting}
+
+因此，5-day posterior 是对 5-day 数据窗口完整重跑的结果，不是 baseline posterior 的复用或改名。
+
+\subsection{5-day 实际运行结果}
+
+本仓库中 5-day full GPU NESSAI 结果为：
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+指标 & 数值 \\
+\midrule
+\(\log Z\) & 594995.4055 \\
+\(\sigma_{\log Z}\) & 0.1246 \\
+posterior samples & 10879 \\
+wall time & 9.589 min \\
+insertion-index KS \(p\) & 0.3567 \\
+max boundary fraction & 0.00735 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+这些数值说明 5-day 运行本身通过了轻量 insertion-index 和 boundary-contact 检查。但必须强调：
+baseline 与 5-day 使用的是不同数据段，因此 \(\Delta\log Z\) 不能解释为 Bayes factor。可以比较的是
+posterior CI 宽度、形态、重构残差和诊断质量。
+
+\section{从代码角度总结整个采样链}
+
+本仓库子任务二的主链条可以总结为：
+\[
+\begin{aligned}
+&\text{读取 TDC }X/Y/Z
+\rightarrow \text{构造 }A/E
+\rightarrow \text{选择窗口}
+\rightarrow \text{FFT/PSD/Covariance} \\
+&\rightarrow \text{GPU F-statistics search}
+\rightarrow \text{Fisher local prior}
+\rightarrow \text{GPU heterodyned likelihood} \\
+&\rightarrow \text{custom nessai.Model}
+\rightarrow \text{FlowSampler full run}
+\rightarrow \text{posterior/evidence/diagnostics}.
+\end{aligned}
+\]
+
+其中最关键的函数和变量如下：
+\begin{longtable}{p{0.35\linewidth}p{0.55\linewidth}}
+\toprule
+代码对象 & 作用 \\
+\midrule
+\texttt{get\_window\_bounds} & 定义 official baseline 与 task 5-day 窗口边界。 \\
+\texttt{build\_window\_data} & 切片数据并重建 FFT、PSD、协方差和逆协方差。 \\
+\texttt{run\_gpu\_fstat\_search} & 在当前窗口上运行 GPU F-statistics search。 \\
+\texttt{run\_gpu\_fisher\_analysis} & 用搜索点和窗口数据计算 Fisher 误差。 \\
+\texttt{build\_gpu\_nessai\_bounds} & 用搜索点和 Fisher 误差构造 local-fisher 先验盒。 \\
+\begin{tabular}[t]{@{}l@{}}\texttt{build\_gpu\_}\\\texttt{heterodyned\_likelihood}\end{tabular}
+& 以搜索点为 fiducial 准备 GPU 杂频似然。 \\
+\begin{tabular}[t]{@{}l@{}}\texttt{TaijiGPUHeterodyned}\\\texttt{NESSAIModel}\end{tabular}
+& 将 Triangle-BBH GPU 似然包装为 NESSAI model。 \\
+\texttt{log\_prior} & 定义内部参数盒上的均匀先验。 \\
+\texttt{log\_likelihood} & 调用 \texttt{het\_log\_like\_vectorized} 批量评估似然。 \\
+\texttt{run\_gpu\_nessai\_sampler} & 构造 \texttt{FlowSampler}，运行 NESSAI 并保存结果。 \\
+\texttt{posterior\_boundary\_check} & 检查 posterior 是否贴 Fisher 盒边界。 \\
+\texttt{extract\_nessai\_diagnostics} & 保存 insertion-index KS 辅助诊断。 \\
+\bottomrule
+\end{longtable}
+
+\section{结论}
+
+本仓库的 NESSAI 采样路线可以概括为“统计目标不变，计算路径优化”。官方 CPU Example 4 提供了
+空间引力波 MBHB 参数估计的基线流程；本仓库保留了该流程的科学结构，但将昂贵的 CPU/full-frequency
+似然替换为 Triangle-BBH GPU heterodyned vectorised likelihood，并通过自定义
+\texttt{nessai.model.Model} 接入 \texttt{nessai.FlowSampler}。posterior 图与官方 CPU 图不同，主要是因为
+本仓库采用 local-fisher 反射支后验，而官方图更接近宽范围全局示例 posterior。5-day 窗口由
+\texttt{get\_window\_bounds} 和 \texttt{build\_window\_data} 从数据层面重新构造，后续 F-stat、Fisher、
+likelihood 和 NESSAI 都使用同一个 \texttt{five\_day\_window} 对象，因而结果具有完整的数据处理闭环。
+
+\begin{thebibliography}{9}
+
+\bibitem{williams2021nessai}
+M. J. Williams, J. Veitch, and C. Messenger.
+\newblock Nested Sampling with Normalising Flows for Gravitational-Wave Inference.
+\newblock \href{https://arxiv.org/abs/2102.11056}{arXiv:2102.11056}, 2021.
+
+\bibitem{covas2024cwfollowup}
+P. B. Covas, R. Prix, and J. Martins.
+\newblock A new framework to follow up candidates from continuous gravitational-wave searches.
+\newblock \href{https://arxiv.org/abs/2404.18608}{arXiv:2404.18608}, 2024.
+
+\bibitem{elgammal2025lisa}
+J. El Gammal, R. Buscicchio, G. Nardini, and J. Torrado.
+\newblock Accelerating LISA inference with Gaussian processes.
+\newblock \href{https://arxiv.org/abs/2503.21871}{arXiv:2503.21871}, 2025.
+
+\bibitem{trianglebbh}
+Triangle Data Center.
+\newblock Triangle-BBH: Frequency-domain BBH TDI-2.0 response template and basic analysis tools.
+\newblock \href{https://github.com/TriangleDataCenter/Triangle-BBH}{GitHub repository}, accessed July 2026.
+
+\bibitem{task5repo}
+L. Chang.
+\newblock task5-lisa-taiji: UCAS 2026 Task 5 LISA/Taiji data analysis repository.
+\newblock \href{https://github.com/leichang131-debug/task5-lisa-taiji}{GitHub repository}, 2026.
+
+\end{thebibliography}
+
+\end{document}
