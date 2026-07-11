@@ -10,6 +10,7 @@
 \usepackage{hyperref}
 \usepackage{xurl}
 \usepackage{listings}
+\usepackage{graphicx}
 
 \hypersetup{
   colorlinks=true,
@@ -22,6 +23,9 @@
 \setlist[enumerate]{leftmargin=1.7em}
 \emergencystretch=3em
 \Urlmuskip=0mu plus 2mu
+\makeatletter
+\setlength{\@fptop}{0pt}
+\makeatother
 
 \lstdefinestyle{pycode}{
   language=Python,
@@ -570,6 +574,121 @@ posterior CI 宽度、形态、重构残差和诊断质量。
 \texttt{extract\_nessai\_diagnostics} & 保存 insertion-index KS 辅助诊断。 \\
 \bottomrule
 \end{longtable}
+
+\section{Notebook 第 22 节：Full GPU-Heterodyned NESSAI Diagnostics}
+
+本节对应 \nbpath{} 的第 22 节，代码生成位置见
+\href{https://github.com/leichang131-debug/task5-lisa-taiji/blob/main/scripts/build_subtask2_notebook.py\#L2046}{\scriptpath{}:2046}。
+这里展示的不是为了汇报而重新绘制的示意图，而是两次 \texttt{FlowSampler} full run 自动写入输出目录的原生
+PNG；仓库再以相同文件内容复制到 \texttt{figures/task5\_subtask2/} 供 Notebook 展示。两组对应图的 SHA-256
+校验和一致，因而图、结果对象 \texttt{result.hdf5} 和 JSON/CSV 摘要是一一对应的。
+
+两次运行使用相同的生产配置：\texttt{nlive=2000}、\texttt{stopping=0.1}、\texttt{seed=1234}、
+\texttt{likelihood\_chunksize=512}，并由 CUDA-enabled PyTorch 驱动 GPU 杂频似然。配置由
+\href{https://github.com/leichang131-debug/task5-lisa-taiji/blob/main/scripts/build_subtask2_notebook.py\#L1679}{\texttt{run\_gpu\_nessai\_sampler}}
+传入 \texttt{nessai.FlowSampler}，实际运行语句为 \texttt{fs.run(plot=True, save=True)}。因此，以下诊断是 full
+run 的正式产物，而非 pilot 的近似结果。
+
+\begin{center}
+\begin{tabular}{lrrrrr}
+\toprule
+窗口 & 死点替换数 & 最终 $d\log Z$ & 原生插入秩 $p$ & posterior 样本数 & wall time \\
+\midrule
+baseline ($t_c\pm2.5$ d) & 75262 & 0.099959 & 0.3035 & 10890 & 9.44 min \\
+5-day ($t_c-4$ d 至 $t_c+1$ d) & 75869 & 0.099983 & 0.2294 & 10879 & 9.59 min \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+这里有一个容易混淆但必须严格区分的事实：\texttt{stopping=0.1} 对应的是 nested-sampling 剩余证据量的
+停止量 $d\log Z$，两次最终值均已小于 0.1；而输出的 \texttt{log\_evidence\_error} 分别为 0.1243 和 0.1246，
+它是 evidence 估计的统计不确定度，并不表示停止条件未满足。
+
+\subsection{插入秩三联图：flow proposal 是否对 live-point replacement 有偏}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.49\textwidth]{../figures/task5_subtask2/11_baseline_nessai_insertion_indices.png}
+\hfill
+\includegraphics[width=0.49\textwidth]{../figures/task5_subtask2/14_five_day_nessai_insertion_indices.png}
+\caption{NESSAI 原生 insertion-index 诊断。左：baseline；右：5-day。每张图的三个面板依次为 rank 的概率质量、全程经验 CDF 与理论 CDF 的差、以及按运行时间分成 8 段后的 CDF 差。}
+\label{fig:nessai-insertion}
+\end{figure}
+
+在 nested sampling 中，新生成点若真是约束先验中的独立样本，它插入当前 2000 个 live points 的 rank 应服从
+离散均匀分布。图~\ref{fig:nessai-insertion} 左栏的黑色水平线为理论 $1/2000=0.0005$，虚线为统计 $1\sigma$
+带；蓝色直方线围绕理论值随机起伏，未见持续的低 rank 或高 rank 堆积。中栏绘制
+``theoretical CDF - empirical CDF''；蓝线围绕零线、未表现为连续同向漂移。右栏将整次运行分成八个时间段，
+彩色曲线检查 flow 在重训后是否仅某一时段失效；两次运行都没有出现某一段系统性偏离灰色置信带的情况。
+
+图标题给出的 $p=0.3035$（baseline）和 $p=0.2294$（5-day）是 NESSAI 原生的离散单侧 KS 统计量。
+其源码对 rank 的计数 CDF 直接计算 $D^+$ 并使用 \texttt{scipy.stats.ksone.sf}；因此这是首选证据。
+本仓库的 \href{https://github.com/leichang131-debug/task5-lisa-taiji/blob/main/scripts/build_subtask2_notebook.py\#L1584}{\texttt{extract\_nessai\_diagnostics}}
+还额外将 rank 变换为 $(r+0.5)/N_{\rm live}$ 后做连续 KS 筛查，得到 0.480 与 0.357。二者统计定义不同而数值不同，
+并不矛盾；正式解读应以原生离散检验为主。两个原生 $p$ 值均大于 0.05，故没有证据拒绝均匀 insertion rank 假设。
+
+\subsection{Trace 图：先验体积收缩时各参数如何进入高似然区域}
+
+\begin{figure}[p]
+\centering
+\includegraphics[height=0.81\textheight]{../figures/task5_subtask2/12_baseline_nessai_trace.png}
+\hspace{1.6cm}
+\includegraphics[height=0.81\textheight]{../figures/task5_subtask2/15_five_day_nessai_trace.png}
+\caption{full GPU-heterodyned NESSAI 的原生 trace。左：baseline；右：5-day。横轴为 $\log X$，点为被替换的 nested samples；两图使用相同的内部参数化，均不是 MCMC walker trace。}
+\label{fig:nessai-traces}
+\end{figure}
+
+图~\ref{fig:nessai-traces} 由 NESSAI 的 \texttt{plot\_trace} 自动生成：纵轴是已被淘汰的
+dead point 的内部参数，横轴为其对应的对数先验体积 $\log X$。它不同于 MCMC 的链混合图，不能用来判断 walker 是否
+穿越模式；其正确用途是观察先验体积压缩时，参数是否从初始 Fisher 盒逐步收缩到高似然区域。
+
+两图的扇形收缩是合理的：\texttt{log\_chirp\_mass}、\texttt{mass\_ratio}、并合时间、相位和部分自旋在小 $X$
+区域明显集中，表明高似然区域被定位。\texttt{log\_luminosity\_distance}、\texttt{cos\_inclination} 和天空参数仍保留较宽的
+末端结构，符合 MBHB 距离--倾角--天空位置退化；\texttt{spin\_2z} 也比 chirp mass 收缩更慢。这不是失收敛证据。
+更关键的是，图末端未出现大量点贴着 Fisher 盒边界的水平截断带。
+
+这一视觉判断由 \href{https://github.com/leichang131-debug/task5-lisa-taiji/blob/main/scripts/build_subtask2_notebook.py\#L1631}{\texttt{posterior\_boundary\_check}}
+定量复核。它对每个物理参数统计落在采样盒上下各 2\% 宽度内的 posterior fraction，并在任一侧达到 5\% 时报警。
+baseline 最大值为 longitude 下边界附近的 0.00652，5-day 最大值为 latitude 上边界附近的 0.00735，均小于 1\%，
+更远低于 5\% 告警线。这里检查的是 Fisher-centred sampling box，不是全局物理边界。
+
+\subsection{$\log X$--$\log\mathcal{L}$ 图：证据积分轨迹和停止条件}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.49\textwidth]{../figures/task5_subtask2/13_baseline_nessai_logXlogL.png}
+\hfill
+\includegraphics[width=0.49\textwidth]{../figures/task5_subtask2/16_five_day_nessai_logXlogL.png}
+\caption{NESSAI evidence state 的原生 $\log X$--$\log\mathcal{L}$ 轨迹。左：baseline，$\log Z=594014.86$、$H=44.58$ bits；右：5-day，$\log Z=594995.41$、$H=44.79$ bits。}
+\label{fig:nessai-logxlogl}
+\end{figure}
+
+图~\ref{fig:nessai-logxlogl} 直接画出 evidence state 保存的 \texttt{log\_vols} 与 \texttt{logLs}。右侧接近
+$\log X=0$ 是初始宽先验，允许存在远离 fiducial 的极差模板，因此出现非常低的原始 log-likelihood；向左，先验体积被压缩，
+只保留高似然区域，曲线进入高似然平台。这正是 nested sampling 用梯形权重积分
+\(\int \mathcal{L}(X)\,dX\) 的几何对象。
+
+纵轴达到百万至千万量级的动态范围，是 GPU 杂频似然对远离 fiducial 的劣质模板给出极低 raw log-likelihood 的结果，
+而不是证据发散。它使原生图对局部平台细节不够直观，却没有破坏积分；最终 $d\log Z$ 已低于停止阈值，且
+信息量 $H$ 在两窗中都约为 45 bits。注意两窗对应不同数据段，故图中的 $\log Z$ 只能作为各自运行的
+evidence/收敛量，不能将 $\Delta\log Z\simeq980.5$ 解释成 5-day 相对 baseline 的 Bayes factor。
+
+\clearpage
+
+\subsection{诊断图与模型代码之间的完整关系}
+
+图的可信度还依赖于采样模型的前置自检。\href{https://github.com/leichang131-debug/task5-lisa-taiji/blob/main/scripts/build_subtask2_notebook.py\#L1335}{\texttt{build\_gpu\_heterodyned\_likelihood}}
+以 GPU F-stat 搜索点为 fiducial 调用 \texttt{prepare\_het\_log\_like}；
+\href{https://github.com/leichang131-debug/task5-lisa-taiji/blob/main/scripts/build_subtask2_notebook.py\#L1367}{\texttt{build\_gpu\_nessai\_bounds}}
+将 Fisher-centred 的物理盒转换到 Triangle-BBH 内部的 \texttt{log/cos/sin} 坐标；
+\href{https://github.com/leichang131-debug/task5-lisa-taiji/blob/main/scripts/build_subtask2_notebook.py\#L1401}{\texttt{TaijiGPUHeterodynedNESSAIModel.log\_likelihood}}
+再把结构化 NESSAI 点组织为 $(n_{\rm dim},N)$ 批量数组，调用 \texttt{het\_log\_like\_vectorized}。
+
+两窗坐标往返误差分别为 $2.18\times10^{-11}$ 和 $2.91\times10^{-11}$；2048 点 GPU 批量基准均为 100\% 有限似然，
+吞吐量分别为 9335 与 7884 points/s。这支持“图中采样的是正确内部参数空间，并且确实调用 GPU 批量杂频似然”。
+但 direct injection 位于当前 reflected local-Fisher box 外，故在该局部模型中其 likelihood 会返回 $-\infty$；这不是图或采样失败，
+而是当前结果必须被表述为 ``reflected branch 附近的局部 posterior'' 的直接原因。若要比较 direct/reflected 的相对证据，
+必须为 direct branch 另建 fiducial 和 local-Fisher run，不能用一次 \texttt{wide\_sky} 杂频运行替代。
 
 \section{结论}
 
