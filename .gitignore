@@ -240,3 +240,6 @@ results/task5_subtask2/*
 !results/task5_subtask2/*.csv
 !results/task5_subtask2/*.json
 results/task5_subtask2/*posterior_samples.csv
+!results/task5_subtask2_remediation/
+results/task5_subtask2_remediation/*
+!results/task5_subtask2_remediation/README.md
