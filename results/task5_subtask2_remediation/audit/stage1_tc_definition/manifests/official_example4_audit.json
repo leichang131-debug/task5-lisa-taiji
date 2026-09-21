@@ -1,0 +1,22 @@
+{
+  "audit_date": "2026-09-14",
+  "repository": "TriangleDataCenter/Triangle-BBH",
+  "remote_main_commit": "13476c18cae4bac2623c6023829500194333b00e",
+  "example4_notebook": "Examples/4_TDC_Verification_MBHB_Search_and_Estimation(CPU).ipynb",
+  "example4_blob_sha": "58f18c5658331430729ed6ce1995e19e391f92fa",
+  "verified_observations": {
+    "window_expression": "abs(data_time / DAY - injected_parameters['coalescence_time']) < 2.5",
+    "waveform_generator": "WaveformGeneratorFRef",
+    "response_generator": "FDTDIResponseGeneratorFRef",
+    "f_statistics": "FstatisticsFref",
+    "parameter_array_converter": "ParamDict2ParamArrFref",
+    "fref_hz": 0.001,
+    "tref_at_constellation": true,
+    "sampled_time_parameter": "reference_time",
+    "sampled_phase_parameter": "reference_phase",
+    "catalog_coalescence_time_removed_from_injection_truths": true,
+    "catalog_coalescence_phase_removed_from_injection_truths": true
+  },
+  "stage1_consequence": "The catalog coalescence_time remains the window anchor, but it must not be treated as an Example 4 reference_time truth. The direct GPU coalescence_time convention remains pending closed-loop validation."
+}
+

@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "stage": "stage1_tc_definition",
+  "status": "closed_loop_tests_passed",
+  "repository_base_commit": "f7c8d66646431783842033a518de10de5ee3112c",
+  "parameter_file": "E:\\TDCEnv\\Repos\\task5-lisa-taiji\\data\\tdc\\0_2_MBHB_parameters.h5",
+  "parameter_file_root_attributes": {},
+  "window_anchor": {
+    "parameter": "coalescence_time",
+    "catalog_tc_day": 25.0,
+    "purpose": "immutable data-selection anchor only",
+    "reference_frame": "unverified_no_HDF5_metadata"
+  },
+  "window_definitions": {
+    "official_baseline": {
+      "before_days": 2.5,
+      "after_days": 2.5,
+      "start_day": 22.5,
+      "end_day": 27.5,
+      "duration_days": 5.0,
+      "source": "Triangle-BBH Example 4: abs(data_time / DAY - catalog_tc) < 2.5"
+    },
+    "task_five_day": {
+      "before_days": 4.0,
+      "after_days": 1.0,
+      "start_day": 21.0,
+      "end_day": 26.0,
+      "duration_days": 5.0,
+      "source": "UCAS 2026 task 5 subtask 2: four days before and one day after catalog_tc"
+    }
+  },
+  "official_example4": {
+    "parameterisation": "FRef",
+    "time_parameter": "reference_time",
+    "phase_parameter": "reference_phase",
+    "fref_hz": 0.001,
+    "tref_at_constellation": true,
+    "catalog_coalescence_time_used_as_reference_time_truth": false
+  },
+  "accelerated_gpu_route": {
+    "parameterisation": "direct_merger",
+    "time_parameter": "coalescence_time",
+    "tc_at_constellation_current_value": true,
+    "final_time_frame_decision": "conversion_contract_verified_catalog_source_frame_unresolved",
+    "time_conversion_contract": "SSB tc with tc_at_constellation=False is numerically identical to SSB-to-constellation converted tc with tc_at_constellation=True"
+  },
+  "closed_loop_tests": {
+    "status": "passed",
+    "cache_root": "/mnt/e/TDCEnv/Cache/task5-stage1",
+    "cuda_device": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "catalog_tc_used_as_test_ssb_day": 25.0,
+    "catalog_reference_frame_asserted": false,
+    "time_roundtrip_passed": true,
+    "gpu_waveform_equivalence_passed": true,
+    "roundtrip_tolerance_seconds": 0.001,
+    "waveform_relative_l2_tolerance": 1e-06,
+    "waveform_mismatch_tolerance": 1e-06,
+    "maximum_roundtrip_error_seconds": 0.0,
+    "maximum_waveform_relative_l2": 0.0,
+    "maximum_absolute_mismatch": 0.0
+  }
+}

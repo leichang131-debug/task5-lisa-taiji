@@ -426,26 +426,47 @@ else:
         """
 ## 7. Window Builder Shared by Baseline and Modified Run
 
-Official Example 4 uses `abs(data_time / DAY - tc) < 2.5`. The task-required run uses `tc - 4 days` to `tc + 1 day`. The function below rebuilds FFT, PSD, frequency cut, covariance, and inverse covariance for each window.
+Official Example 4 uses `abs(data_time / DAY - catalog_tc) < 2.5`. The task-required run uses `catalog_tc - 4 days` to `catalog_tc + 1 day`. Here `catalog_tc` is frozen as the data-selection anchor only; it is not assumed to equal the FRef `reference_time` or the direct-GPU inference time. The function below rebuilds FFT, PSD, frequency cut, covariance, and inverse covariance for each window.
 """
     ),
     code(
         r"""
-def get_tc_day(params: dict) -> float:
-    return float(params["coalescence_time"])
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-def get_window_bounds(tc_day: float, mode: str) -> tuple[float, float]:
-    if mode == "official_baseline":
-        return tc_day - 2.5, tc_day + 2.5
-    if mode == "task_five_day":
-        return tc_day - 4.0, tc_day + 1.0
-    raise ValueError(f"Unknown mode: {mode}")
+from src.time_conventions import (
+    WINDOW_ANCHOR_PARAMETER,
+    WINDOW_DEFINITIONS,
+    get_catalog_tc_day,
+    get_window_bounds,
+    validate_window_bounds,
+)
+
+STAGE1_TIME_MANIFEST_PATH = (
+    REPO_ROOT
+    / "results"
+    / "task5_subtask2_remediation"
+    / "audit"
+    / "stage1_tc_definition"
+    / "manifests"
+    / "time_convention_manifest.json"
+)
+with STAGE1_TIME_MANIFEST_PATH.open(encoding="utf-8") as stream:
+    STAGE1_TIME_MANIFEST = json.load(stream)
+if STAGE1_TIME_MANIFEST["window_anchor"]["parameter"] != WINDOW_ANCHOR_PARAMETER:
+    raise RuntimeError("Stage-1 manifest and window code use different anchors")
 
 def build_window_data(label: str, mode: str, psd_mode: str = "before") -> dict:
     if full_time is None or full_channels_td is None or injected_parameters is None:
         raise RuntimeError("Load TDC data and injected parameters first.")
-    tc_day = get_tc_day(injected_parameters)
-    start_day, end_day = get_window_bounds(tc_day, mode)
+    catalog_tc_day = get_catalog_tc_day(injected_parameters)
+    manifest_tc_day = float(STAGE1_TIME_MANIFEST["window_anchor"]["catalog_tc_day"])
+    if not np.isclose(catalog_tc_day, manifest_tc_day, rtol=0.0, atol=1e-12):
+        raise RuntimeError(
+            f"Catalog tc changed: manifest={manifest_tc_day}, data={catalog_tc_day}"
+        )
+    start_day, end_day = get_window_bounds(catalog_tc_day, mode)
+    validate_window_bounds(catalog_tc_day, mode, start_day, end_day)
     mask = (full_time / DAY >= start_day) & (full_time / DAY <= end_day)
     if mask.sum() < 16:
         raise ValueError(f"{label}: selected window has too few samples: {mask.sum()}")
@@ -481,12 +502,13 @@ def build_window_data(label: str, mode: str, psd_mode: str = "before") -> dict:
 
     CovMat = np.array([[psd_channels[0], np.zeros_like(data_frequency)], [np.zeros_like(data_frequency), psd_channels[1]]]) / 4.0 * Tobs
     InvCovMat = np.linalg.inv(np.transpose(CovMat, (2, 0, 1)))
-    return dict(label=label, mode=mode, tc_day=tc_day, start_day=start_day, end_day=end_day, data_time=data_time, data_channels_td=data_channels_td, dt=dt, Tobs=Tobs, data_frequency=data_frequency, data_channels_fd=data_channels_fd, psd_channels=psd_channels, CovMat=CovMat, InvCovMat=InvCovMat, psd_mode=psd_mode, psd_samples=int(psd_mask.sum()))
+    return dict(label=label, mode=mode, tc_day=catalog_tc_day, catalog_tc_day=catalog_tc_day, window_anchor_parameter=WINDOW_ANCHOR_PARAMETER, window_definition=WINDOW_DEFINITIONS[mode], start_day=start_day, end_day=end_day, data_time=data_time, data_channels_td=data_channels_td, dt=dt, Tobs=Tobs, data_frequency=data_frequency, data_channels_fd=data_channels_fd, psd_channels=psd_channels, CovMat=CovMat, InvCovMat=InvCovMat, psd_mode=psd_mode, psd_samples=int(psd_mask.sum()))
 
 def print_window_summary(window: dict) -> None:
     print(f"[{window['label']}]")
     print("mode:", window["mode"])
-    print("tc_day:", window["tc_day"])
+    print("window anchor:", window["window_anchor_parameter"])
+    print("catalog_tc_day:", window["catalog_tc_day"])
     print("start_day/end_day:", window["start_day"], window["end_day"])
     print("duration_days:", (window["data_time"][-1] - window["data_time"][0]) / DAY)
     print("dt:", window["dt"])

@@ -1,0 +1,15 @@
+{
+  "status": "passed",
+  "cache_root": "/mnt/e/TDCEnv/Cache/task5-stage1",
+  "cuda_device": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "catalog_tc_used_as_test_ssb_day": 25.0,
+  "catalog_reference_frame_asserted": false,
+  "time_roundtrip_passed": true,
+  "gpu_waveform_equivalence_passed": true,
+  "roundtrip_tolerance_seconds": 0.001,
+  "waveform_relative_l2_tolerance": 1e-06,
+  "waveform_mismatch_tolerance": 1e-06,
+  "maximum_roundtrip_error_seconds": 0.0,
+  "maximum_waveform_relative_l2": 0.0,
+  "maximum_absolute_mismatch": 0.0
+}

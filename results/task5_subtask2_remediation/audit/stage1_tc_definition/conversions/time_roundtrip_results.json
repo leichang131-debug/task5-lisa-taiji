@@ -1,0 +1,72 @@
+[
+  {
+    "label": "catalog_direct",
+    "longitude_rad": 4.71238898038469,
+    "latitude_rad": 0.5235987755982988,
+    "tc_ssb_input_day": 25.0,
+    "tc_constellation_day": 25.004849222762076,
+    "delay_seconds": 418.9728466432426,
+    "forward_iterations": 4,
+    "forward_converged": true,
+    "ssb_roundtrip_day": 25.0,
+    "ssb_roundtrip_error_seconds": 0.0,
+    "constellation_roundtrip_error_seconds": 0.0,
+    "passed": true
+  },
+  {
+    "label": "catalog_reflected",
+    "longitude_rad": 2.0850445242531537,
+    "latitude_rad": -0.49470878860178,
+    "tc_ssb_input_day": 25.0,
+    "tc_constellation_day": 24.995087824723388,
+    "delay_seconds": -424.41194389912056,
+    "forward_iterations": 4,
+    "forward_converged": true,
+    "ssb_roundtrip_day": 25.0,
+    "ssb_roundtrip_error_seconds": 0.0,
+    "constellation_roundtrip_error_seconds": 0.0,
+    "passed": true
+  },
+  {
+    "label": "random_sky_1",
+    "longitude_rad": 4.89465975175387,
+    "latitude_rad": -0.5144897254009089,
+    "tc_ssb_input_day": 25.0,
+    "tc_constellation_day": 25.005019378555772,
+    "delay_seconds": 433.6743072188181,
+    "forward_iterations": 3,
+    "forward_converged": true,
+    "ssb_roundtrip_day": 25.0,
+    "ssb_roundtrip_error_seconds": 0.0,
+    "constellation_roundtrip_error_seconds": 0.0,
+    "passed": true
+  },
+  {
+    "label": "random_sky_2",
+    "longitude_rad": 1.969092378295049,
+    "latitude_rad": 0.14377203713464967,
+    "tc_ssb_input_day": 25.0,
+    "tc_constellation_day": 24.994341757299004,
+    "delay_seconds": -488.8721693660903,
+    "forward_iterations": 4,
+    "forward_converged": true,
+    "ssb_roundtrip_day": 25.0,
+    "ssb_roundtrip_error_seconds": 0.0,
+    "constellation_roundtrip_error_seconds": 0.0,
+    "passed": true
+  },
+  {
+    "label": "random_sky_3",
+    "longitude_rad": 5.812253582883725,
+    "latitude_rad": -0.08902619013244348,
+    "tc_ssb_input_day": 25.0,
+    "tc_constellation_day": 25.00380469830168,
+    "delay_seconds": 328.72593326489766,
+    "forward_iterations": 4,
+    "forward_converged": true,
+    "ssb_roundtrip_day": 25.0,
+    "ssb_roundtrip_error_seconds": 0.0,
+    "constellation_roundtrip_error_seconds": 0.0,
+    "passed": true
+  }
+]
